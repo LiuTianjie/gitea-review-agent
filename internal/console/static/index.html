@@ -1,14 +1,14 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>codex-gitea console</title>
+<title>codex-gitea 控制台</title>
 <style>
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
   body {
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, sans-serif;
     margin: 0; padding: 0; line-height: 1.5;
     background: #f6f7f9; color: #1c1e21;
   }
@@ -27,7 +27,7 @@
     background: #fff; border: 1px solid #e1e4e8; border-radius: 8px;
     padding: 16px 20px; margin: 16px 0;
   }
-  section h2 { margin-top: 0; font-size: 15px; text-transform: uppercase; letter-spacing: .04em; }
+  section h2 { margin-top: 0; font-size: 15px; letter-spacing: .02em; }
   label { display: block; margin: 10px 0 2px; font-size: 13px; font-weight: 600; }
   input, select { width: 100%; padding: 8px 10px; border: 1px solid #ccd0d5; border-radius: 6px; font-size: 14px; }
   button {
@@ -56,94 +56,94 @@
 </style>
 </head>
 <body>
-<header><h1>codex-gitea console</h1></header>
+<header><h1>codex-gitea 控制台</h1></header>
 <main>
 
   <section>
-    <h2>Gitea & Review settings</h2>
+    <h2>Gitea 与审查设置</h2>
     <div class="row">
       <div>
-        <label for="gitea_url">Gitea URL</label>
+        <label for="gitea_url">Gitea 地址</label>
         <input id="gitea_url" placeholder="https://gitea.example.com">
       </div>
       <div>
-        <label for="gitea_token">Gitea token</label>
-        <input id="gitea_token" type="password" placeholder="(unchanged if left blank)">
+        <label for="gitea_token">Gitea 令牌</label>
+        <input id="gitea_token" type="password" placeholder="（留空则保持不变）">
       </div>
     </div>
     <div class="row">
       <div>
-        <label for="webhook_secret">Webhook secret</label>
-        <input id="webhook_secret" type="password" placeholder="(unchanged if left blank)">
+        <label for="webhook_secret">Webhook 密钥</label>
+        <input id="webhook_secret" type="password" placeholder="（留空则保持不变）">
       </div>
       <div>
-        <label for="model">Model</label>
+        <label for="model">模型</label>
         <input id="model" placeholder="gpt-5-codex">
       </div>
     </div>
     <div class="row">
       <div>
-        <label for="trigger_keywords">Trigger keywords (comma-separated)</label>
+        <label for="trigger_keywords">触发关键词（英文逗号分隔）</label>
         <input id="trigger_keywords" placeholder="/review,@review">
       </div>
       <div>
-        <label for="concurrency">Concurrency</label>
+        <label for="concurrency">并发数</label>
         <input id="concurrency" type="number" min="1" placeholder="2">
       </div>
     </div>
     <div class="row">
       <div>
-        <label for="codex_auth_mode">Codex auth mode</label>
+        <label for="codex_auth_mode">Codex 鉴权模式</label>
         <select id="codex_auth_mode">
-          <option value="authfile">authfile (auth.json)</option>
+          <option value="authfile">authfile（auth.json）</option>
           <option value="apikey">apikey</option>
         </select>
       </div>
       <div>
-        <label for="codex_api_key">Codex API key</label>
-        <input id="codex_api_key" type="password" placeholder="(apikey mode; unchanged if blank)">
+        <label for="codex_api_key">Codex API 密钥</label>
+        <input id="codex_api_key" type="password" placeholder="（apikey 模式使用；留空则不变）">
       </div>
     </div>
     <div class="row">
       <div>
-        <label for="repo_allowlist">Repo allowlist (comma-separated)</label>
+        <label for="repo_allowlist">仓库白名单（英文逗号分隔）</label>
         <input id="repo_allowlist" placeholder="owner/repo,owner2/repo2">
       </div>
       <div>
-        <label for="timeout">Codex timeout</label>
+        <label for="timeout">Codex 超时</label>
         <input id="timeout" placeholder="10m">
       </div>
     </div>
-    <button id="saveBtn">Save settings</button>
-    <button class="secondary" id="reloadBtn">Reload</button>
+    <button id="saveBtn">保存设置</button>
+    <button class="secondary" id="reloadBtn">重新加载</button>
     <div class="msg" id="settingsMsg"></div>
-    <p class="muted">Secret fields show <code>***set***</code> when already configured. Leave them as-is to keep the stored value, or type a new value to replace it.</p>
+    <p class="muted">密钥字段在已配置时显示 <code>***set***</code>。保持原样即沿用已存的值，输入新值则替换。</p>
   </section>
 
   <section>
     <h2>Codex auth.json</h2>
-    <p class="muted">Upload the codex <code>auth.json</code> for authfile mode. It must contain <code>tokens.refresh_token</code>. Stored at the codex home with 0600 permissions.</p>
+    <p class="muted">上传 authfile 模式所需的 codex <code>auth.json</code>，必须包含 <code>tokens.refresh_token</code>。将以 0600 权限保存到 codex 主目录。</p>
     <input id="authFile" type="file" accept=".json,application/json">
-    <button id="uploadBtn">Upload auth.json</button>
+    <button id="uploadBtn">上传 auth.json</button>
     <div class="msg" id="authMsg"></div>
   </section>
 
   <section>
-    <h2>Codex auth status</h2>
-    <button id="statusBtn">Check status</button>
+    <h2>Codex 鉴权状态</h2>
+    <button id="statusBtn">检查状态</button>
     <div class="msg" id="statusMsg"></div>
   </section>
 
   <section>
-    <h2>Recent jobs</h2>
-    <button class="secondary" id="jobsBtn">Refresh now</button>
+    <h2>近期任务</h2>
+    <button class="secondary" id="jobsBtn">立即刷新</button>
     <span class="muted" id="jobsMeta"></span>
     <div style="overflow:auto; max-height: 420px; margin-top: 8px;">
       <table>
         <thead>
-          <tr><th>ID</th><th>PR</th><th>Event</th><th>Action</th><th>Status</th><th>Att.</th><th>Created</th><th>Session</th></tr>
+          <tr><th>ID</th><th>PR</th><th>事件</th><th>动作</th><th>状态</th><th>次数</th><th>创建时间</th><th>会话</th></tr>
         </thead>
-        <tbody id="jobsBody"><tr><td colspan="8" class="muted">loading…</td></tr></tbody>
+        <tbody id="jobsBody"><tr><td colspan="8" class="muted">加载中…</td></tr></tbody>
       </table>
     </div>
   </section>
@@ -152,7 +152,7 @@
 <script>
 (function () {
   "use strict";
-  // Field id -> settings key. All ids map 1:1 to lower_snake_case setting keys.
+  // 字段 id -> 设置键。所有 id 与 lower_snake_case 的设置键一一对应。
   var FIELDS = ["gitea_url","gitea_token","webhook_secret","model","trigger_keywords",
                 "concurrency","codex_auth_mode","codex_api_key","repo_allowlist","timeout"];
   var SECRETS = {gitea_token:1, webhook_secret:1, codex_api_key:1};
@@ -168,8 +168,8 @@
         var v = s[k] != null ? s[k] : "";
         el.value = v;
       });
-      show($("settingsMsg"), "loaded", true);
-    }).catch(function(e){ show($("settingsMsg"), "load failed: " + e, false); });
+      show($("settingsMsg"), "已加载", true);
+    }).catch(function(e){ show($("settingsMsg"), "加载失败：" + e, false); });
   }
 
   function saveSettings(){
@@ -177,8 +177,7 @@
     FIELDS.forEach(function(k){
       var el = $(k); if (!el) return;
       var v = el.value;
-      // Don't resubmit the redaction placeholder for secrets; the server skips
-      // it too, but this keeps the request clean.
+      // 不重复提交密钥的脱敏占位符；服务端也会跳过，这里保持请求干净。
       if (SECRETS[k] && v === REDACTED) return;
       payload[k] = v;
     });
@@ -188,14 +187,14 @@
       body: JSON.stringify({settings: payload})
     }).then(function(r){ return r.json().then(function(b){ return {ok:r.ok, b:b}; }); })
       .then(function(res){
-        if (res.ok) { show($("settingsMsg"), "saved " + (res.b.updated||0) + " setting(s)", true); loadSettings(); }
-        else { show($("settingsMsg"), "save failed: " + (res.b.error||""), false); }
-      }).catch(function(e){ show($("settingsMsg"), "save failed: " + e, false); });
+        if (res.ok) { show($("settingsMsg"), "已保存 " + (res.b.updated||0) + " 项设置", true); loadSettings(); }
+        else { show($("settingsMsg"), "保存失败：" + (res.b.error||""), false); }
+      }).catch(function(e){ show($("settingsMsg"), "保存失败：" + e, false); });
   }
 
   function uploadAuth(){
     var f = $("authFile").files[0];
-    if (!f) { show($("authMsg"), "choose a file first", false); return; }
+    if (!f) { show($("authMsg"), "请先选择文件", false); return; }
     f.text().then(function(text){
       return fetch("/admin/api/authfile", {
         method: "POST",
@@ -204,16 +203,16 @@
       });
     }).then(function(r){ return r.json().then(function(b){ return {ok:r.ok, b:b}; }); })
       .then(function(res){
-        if (res.ok) show($("authMsg"), "saved to " + res.b.path, true);
-        else show($("authMsg"), "rejected: " + (res.b.error||""), false);
-      }).catch(function(e){ show($("authMsg"), "upload failed: " + e, false); });
+        if (res.ok) show($("authMsg"), "已保存到 " + res.b.path, true);
+        else show($("authMsg"), "已拒绝：" + (res.b.error||""), false);
+      }).catch(function(e){ show($("authMsg"), "上传失败：" + e, false); });
   }
 
   function checkStatus(){
-    show($("statusMsg"), "checking…", true);
+    show($("statusMsg"), "检查中…", true);
     fetch("/admin/api/status").then(function(r){ return r.json(); }).then(function(s){
-      show($("statusMsg"), s.status || "(no status)", !!s.ok);
-    }).catch(function(e){ show($("statusMsg"), "status failed: " + e, false); });
+      show($("statusMsg"), s.status || "（无状态信息）", !!s.ok);
+    }).catch(function(e){ show($("statusMsg"), "检查失败：" + e, false); });
   }
 
   function esc(s){ var d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
@@ -221,7 +220,7 @@
   function loadJobs(){
     fetch("/admin/api/jobs").then(function(r){ return r.json(); }).then(function(jobs){
       var body = $("jobsBody");
-      if (!jobs || !jobs.length) { body.innerHTML = '<tr><td colspan="8" class="muted">no jobs yet</td></tr>'; }
+      if (!jobs || !jobs.length) { body.innerHTML = '<tr><td colspan="8" class="muted">暂无任务</td></tr>'; }
       else {
         body.innerHTML = jobs.map(function(j){
           var pr = esc(j.owner) + "/" + esc(j.repo) + "#" + esc(j.number);
@@ -234,8 +233,8 @@
                  "</span></td><td>" + esc(j.attempts) + "</td><td>" + created + "</td><td>" + sess + "</td></tr>";
         }).join("");
       }
-      $("jobsMeta").textContent = " updated " + new Date().toLocaleTimeString();
-    }).catch(function(e){ $("jobsBody").innerHTML = '<tr><td colspan="8" class="err">load failed: ' + esc(e) + '</td></tr>'; });
+      $("jobsMeta").textContent = " 更新于 " + new Date().toLocaleTimeString();
+    }).catch(function(e){ $("jobsBody").innerHTML = '<tr><td colspan="8" class="err">加载失败：' + esc(e) + '</td></tr>'; });
   }
 
   $("saveBtn").addEventListener("click", saveSettings);

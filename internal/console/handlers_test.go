@@ -302,7 +302,7 @@ func TestIndexServed(t *testing.T) {
 	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
 		t.Errorf("index content-type = %q, want text/html", ct)
 	}
-	if !strings.Contains(w.Body.String(), "codex-gitea console") {
+	if !strings.Contains(w.Body.String(), "codex-gitea 控制台") {
 		t.Errorf("index body missing title")
 	}
 }
