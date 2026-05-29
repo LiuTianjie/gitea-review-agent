@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/turning4th/codex-gitea/internal/model"
@@ -243,6 +244,19 @@ func (r *Runner) run(ctx context.Context, dir string, args []string) ([]byte, er
 	cmd.Env = r.env()
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+
+	// Run codex in its own process group so a timeout kills the whole tree.
+	// codex spawns children (git, etc.); killing only the direct child leaves
+	// grandchildren holding the stdout pipe open, which makes cmd.Wait block
+	// past the deadline (the I/O copy never sees EOF).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		// Negative pid targets the entire process group (group leader == child pid).
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	// Backstop: if a grandchild still holds the pipes after the group kill,
+	// abort the I/O copy so Wait returns promptly instead of hanging.
+	cmd.WaitDelay = 2 * time.Second
 
 	err := cmd.Run()
 	if err != nil {
