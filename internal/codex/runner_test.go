@@ -1,0 +1,277 @@
+package codex
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/turning4th/codex-gitea/internal/model"
+)
+
+// writeStub creates an executable stub codex script in a temp dir and points
+// CODEX_BIN at it. The stub:
+//   - on `login status`: prints a fixed auth line.
+//   - on `exec [resume ...]`: prints a thread.started + agent_message stream to
+//     stdout, and (if a -o path is given) writes a valid findings JSON there.
+//
+// It logs its cwd, selected env vars, and argv to logPath for assertions.
+// If STUB_SLEEP is set in the env, it sleeps that many seconds first (timeout test).
+func writeStub(t *testing.T, logPath string) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := filepath.Join(dir, "codex-stub.sh")
+
+	body := `#!/bin/sh
+if [ -n "$STUB_SLEEP" ]; then
+  sleep "$STUB_SLEEP"
+fi
+
+if [ "$1" = "login" ]; then
+  echo "Logged in using ChatGPT account (stub)"
+  exit 0
+fi
+
+# exec mode: log context for assertions
+{
+  echo "CWD=$(pwd)"
+  echo "GITEA_TOKEN=${GITEA_TOKEN}"
+  echo "OPENAI_API_KEY=${OPENAI_API_KEY}"
+  echo "CODEX_HOME=${CODEX_HOME}"
+  echo "CODEX_API_KEY=${CODEX_API_KEY}"
+  i=0
+  for a in "$@"; do
+    echo "ARG[$i]=$a"
+    i=$((i+1))
+  done
+} >> "$STUB_LOG"
+
+# locate -o <path>
+out=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-o" ]; then
+    out="$a"
+  fi
+  prev="$a"
+done
+
+printf '%s\n' '{"type":"thread.started","thread_id":"stub-thread-xyz"}'
+printf '%s\n' '{"type":"turn.started"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"stub answer text"}}'
+printf '%s\n' '{"type":"turn.completed"}'
+
+if [ -n "$out" ]; then
+  cat > "$out" <<'JSON'
+{"summary":"stub summary","overall_severity":"high","findings":[{"path":"calc.go","line":19,"side":"NEW","severity":"high","title":"stub finding","body":"stub body"}]}
+JSON
+fi
+exit 0
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv("CODEX_BIN", script)
+	t.Setenv("STUB_LOG", logPath)
+	return script
+}
+
+func TestRunner_ReviewNew(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "stub.log")
+	writeStub(t, logPath)
+
+	// A secret that must NOT reach the codex subprocess.
+	t.Setenv("GITEA_TOKEN", "super-secret-gitea")
+	t.Setenv("OPENAI_API_KEY", "super-secret-openai")
+
+	worktree := t.TempDir()
+	codexHome := t.TempDir()
+
+	r := New(Options{CodexHome: codexHome, APIKey: "ak-test"})
+
+	res, err := r.Review(context.Background(), model.CodexInput{
+		Worktree: worktree,
+		BaseRef:  "main",
+	})
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+
+	if res.SessionID != "stub-thread-xyz" {
+		t.Errorf("SessionID = %q, want stub-thread-xyz", res.SessionID)
+	}
+	if res.Summary != "stub summary" {
+		t.Errorf("Summary = %q", res.Summary)
+	}
+	if res.OverallSeverity != model.SeverityHigh {
+		t.Errorf("OverallSeverity = %q, want high", res.OverallSeverity)
+	}
+	if len(res.Findings) != 1 {
+		t.Fatalf("Findings len = %d, want 1", len(res.Findings))
+	}
+	f := res.Findings[0]
+	if f.Path != "calc.go" || f.Line != 19 || f.Side != model.SideNew || f.Severity != model.SeverityHigh {
+		t.Errorf("finding = %+v", f)
+	}
+
+	logb, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read stub log: %v", err)
+	}
+	log := string(logb)
+
+	// cmd.Dir must be the worktree. Resolve symlinks because macOS /tmp -> /private/tmp,
+	// and the subprocess's reported CWD is the resolved path.
+	wantCWD := worktree
+	if resolved, rerr := filepath.EvalSymlinks(worktree); rerr == nil {
+		wantCWD = resolved
+	}
+	if !strings.Contains(log, "CWD="+wantCWD) && !strings.Contains(log, "CWD="+worktree) {
+		t.Errorf("stub cwd not the worktree; log:\n%s", log)
+	}
+	// secrets must be stripped from the subprocess env.
+	if !strings.Contains(log, "GITEA_TOKEN=\n") {
+		t.Errorf("GITEA_TOKEN leaked into codex env; log:\n%s", log)
+	}
+	if !strings.Contains(log, "OPENAI_API_KEY=\n") {
+		t.Errorf("OPENAI_API_KEY leaked into codex env; log:\n%s", log)
+	}
+	// CODEX_HOME and CODEX_API_KEY must be set.
+	if !strings.Contains(log, "CODEX_HOME="+codexHome) {
+		t.Errorf("CODEX_HOME not set; log:\n%s", log)
+	}
+	if !strings.Contains(log, "CODEX_API_KEY=ak-test") {
+		t.Errorf("CODEX_API_KEY not set; log:\n%s", log)
+	}
+	// required flags / subcommand for a new review.
+	for _, want := range []string{
+		"ARG[0]=exec",
+		"approval_policy=never",
+		"sandbox_mode=read-only",
+		"--output-schema",
+		"--skip-git-repo-check",
+		"-o",
+	} {
+		if !strings.Contains(log, want) {
+			t.Errorf("expected arg %q in stub log:\n%s", want, log)
+		}
+	}
+	// a new review must NOT be a resume.
+	if strings.Contains(log, "ARG[1]=resume") {
+		t.Errorf("new review incorrectly issued a resume; log:\n%s", log)
+	}
+}
+
+func TestRunner_ReviewResume(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "stub.log")
+	writeStub(t, logPath)
+
+	r := New(Options{CodexHome: t.TempDir()})
+
+	res, err := r.Review(context.Background(), model.CodexInput{
+		Worktree:  t.TempDir(),
+		BaseRef:   "main",
+		SessionID: "prev-session-123",
+		Note:      "head moved abc->def, note what's fixed",
+	})
+	if err != nil {
+		t.Fatalf("Review(resume): %v", err)
+	}
+	if res.SessionID != "stub-thread-xyz" {
+		t.Errorf("SessionID = %q, want stub-thread-xyz", res.SessionID)
+	}
+	if len(res.Findings) != 1 {
+		t.Fatalf("Findings len = %d, want 1", len(res.Findings))
+	}
+
+	logb, _ := os.ReadFile(logPath)
+	log := string(logb)
+	if !strings.Contains(log, "ARG[0]=exec") || !strings.Contains(log, "ARG[1]=resume") {
+		t.Errorf("resume args missing; log:\n%s", log)
+	}
+	if !strings.Contains(log, "ARG[2]=prev-session-123") {
+		t.Errorf("resume session id missing; log:\n%s", log)
+	}
+	// the note must be folded into the prompt.
+	if !strings.Contains(log, "head moved abc->def") {
+		t.Errorf("resume note not in prompt; log:\n%s", log)
+	}
+}
+
+func TestRunner_Ask(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "stub.log")
+	writeStub(t, logPath)
+
+	r := New(Options{})
+
+	ans, err := r.Ask(context.Background(), "sess-1", t.TempDir(), "is this fixed?")
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if ans != "stub answer text" {
+		t.Errorf("Ask = %q, want 'stub answer text'", ans)
+	}
+
+	logb, _ := os.ReadFile(logPath)
+	log := string(logb)
+	if !strings.Contains(log, "ARG[1]=resume") || !strings.Contains(log, "ARG[2]=sess-1") {
+		t.Errorf("Ask did not resume the given session; log:\n%s", log)
+	}
+	if !strings.Contains(log, "is this fixed?") {
+		t.Errorf("Ask question missing from args; log:\n%s", log)
+	}
+}
+
+func TestRunner_AskEmptySession(t *testing.T) {
+	r := New(Options{})
+	if _, err := r.Ask(context.Background(), "", t.TempDir(), "q"); err == nil {
+		t.Fatal("expected error for empty session id")
+	}
+}
+
+func TestRunner_Status(t *testing.T) {
+	writeStub(t, filepath.Join(t.TempDir(), "stub.log"))
+	r := New(Options{})
+	out, err := r.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !strings.Contains(out, "Logged in using ChatGPT account") {
+		t.Errorf("Status = %q", out)
+	}
+}
+
+func TestRunner_Timeout(t *testing.T) {
+	writeStub(t, filepath.Join(t.TempDir(), "stub.log"))
+	t.Setenv("STUB_SLEEP", "5")
+
+	r := New(Options{Timeout: 150 * time.Millisecond})
+	start := time.Now()
+	_, err := r.Review(context.Background(), model.CodexInput{Worktree: t.TempDir(), BaseRef: "main"})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("error = %v, want a timeout error", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("Review took %s; timeout not enforced", elapsed)
+	}
+}
+
+func TestRunner_ReviewEmptyWorktree(t *testing.T) {
+	r := New(Options{})
+	if _, err := r.Review(context.Background(), model.CodexInput{}); err == nil {
+		t.Fatal("expected error for empty worktree")
+	}
+}
+
+func TestNew_CodexBinOverride(t *testing.T) {
+	t.Setenv("CODEX_BIN", "/custom/path/codex")
+	r := New(Options{Bin: "codex"})
+	if r.bin != "/custom/path/codex" {
+		t.Errorf("bin = %q, want /custom/path/codex", r.bin)
+	}
+}

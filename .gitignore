@@ -1,0 +1,36 @@
+# Binaries
+/codex-gitea
+*.exe
+/out/
+/dist/
+
+# Local runtime data (these are container volumes in prod)
+/data/
+/cache/
+/work/
+/codex-home/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-*
+
+# Secrets — never commit
+auth.json
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Go
+/vendor/
+*.test
+*.out
+coverage.*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

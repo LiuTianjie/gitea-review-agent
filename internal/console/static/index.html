@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>codex-gitea console</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin: 0; padding: 0; line-height: 1.5;
+    background: #f6f7f9; color: #1c1e21;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #16181c; color: #e6e8eb; }
+    section { background: #1f2329 !important; border-color: #30353c !important; }
+    input, select { background: #16181c; color: #e6e8eb; border-color: #30353c; }
+    th { background: #262b32 !important; }
+    tr:nth-child(even) td { background: #1b1f24; }
+    .muted { color: #8b9096 !important; }
+  }
+  header { padding: 16px 24px; border-bottom: 1px solid #d8dbdf; }
+  header h1 { margin: 0; font-size: 18px; }
+  main { max-width: 900px; margin: 0 auto; padding: 16px 24px 64px; }
+  section {
+    background: #fff; border: 1px solid #e1e4e8; border-radius: 8px;
+    padding: 16px 20px; margin: 16px 0;
+  }
+  section h2 { margin-top: 0; font-size: 15px; text-transform: uppercase; letter-spacing: .04em; }
+  label { display: block; margin: 10px 0 2px; font-size: 13px; font-weight: 600; }
+  input, select { width: 100%; padding: 8px 10px; border: 1px solid #ccd0d5; border-radius: 6px; font-size: 14px; }
+  button {
+    margin-top: 12px; padding: 8px 16px; border: 0; border-radius: 6px;
+    background: #2563eb; color: #fff; font-size: 14px; cursor: pointer;
+  }
+  button:hover { background: #1d4ed8; }
+  button.secondary { background: #6b7280; }
+  button.secondary:hover { background: #4b5563; }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; }
+  .row > div { flex: 1 1 200px; }
+  .msg { margin-top: 10px; font-size: 13px; min-height: 18px; }
+  .ok { color: #15803d; }
+  .err { color: #b91c1c; }
+  .muted { color: #6b7280; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e1e4e8; }
+  th { background: #f0f2f5; position: sticky; top: 0; }
+  .badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .s-done { background: #dcfce7; color: #166534; }
+  .s-failed { background: #fee2e2; color: #991b1b; }
+  .s-running { background: #dbeafe; color: #1e40af; }
+  .s-pending { background: #fef9c3; color: #854d0e; }
+  .s-superseded { background: #e5e7eb; color: #374151; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<header><h1>codex-gitea console</h1></header>
+<main>
+
+  <section>
+    <h2>Gitea & Review settings</h2>
+    <div class="row">
+      <div>
+        <label for="gitea_url">Gitea URL</label>
+        <input id="gitea_url" placeholder="https://gitea.example.com">
+      </div>
+      <div>
+        <label for="gitea_token">Gitea token</label>
+        <input id="gitea_token" type="password" placeholder="(unchanged if left blank)">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="webhook_secret">Webhook secret</label>
+        <input id="webhook_secret" type="password" placeholder="(unchanged if left blank)">
+      </div>
+      <div>
+        <label for="model">Model</label>
+        <input id="model" placeholder="gpt-5-codex">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="trigger_keywords">Trigger keywords (comma-separated)</label>
+        <input id="trigger_keywords" placeholder="/review,@review">
+      </div>
+      <div>
+        <label for="concurrency">Concurrency</label>
+        <input id="concurrency" type="number" min="1" placeholder="2">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="codex_auth_mode">Codex auth mode</label>
+        <select id="codex_auth_mode">
+          <option value="authfile">authfile (auth.json)</option>
+          <option value="apikey">apikey</option>
+        </select>
+      </div>
+      <div>
+        <label for="codex_api_key">Codex API key</label>
+        <input id="codex_api_key" type="password" placeholder="(apikey mode; unchanged if blank)">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="repo_allowlist">Repo allowlist (comma-separated)</label>
+        <input id="repo_allowlist" placeholder="owner/repo,owner2/repo2">
+      </div>
+      <div>
+        <label for="timeout">Codex timeout</label>
+        <input id="timeout" placeholder="10m">
+      </div>
+    </div>
+    <button id="saveBtn">Save settings</button>
+    <button class="secondary" id="reloadBtn">Reload</button>
+    <div class="msg" id="settingsMsg"></div>
+    <p class="muted">Secret fields show <code>***set***</code> when already configured. Leave them as-is to keep the stored value, or type a new value to replace it.</p>
+  </section>
+
+  <section>
+    <h2>Codex auth.json</h2>
+    <p class="muted">Upload the codex <code>auth.json</code> for authfile mode. It must contain <code>tokens.refresh_token</code>. Stored at the codex home with 0600 permissions.</p>
+    <input id="authFile" type="file" accept=".json,application/json">
+    <button id="uploadBtn">Upload auth.json</button>
+    <div class="msg" id="authMsg"></div>
+  </section>
+
+  <section>
+    <h2>Codex auth status</h2>
+    <button id="statusBtn">Check status</button>
+    <div class="msg" id="statusMsg"></div>
+  </section>
+
+  <section>
+    <h2>Recent jobs</h2>
+    <button class="secondary" id="jobsBtn">Refresh now</button>
+    <span class="muted" id="jobsMeta"></span>
+    <div style="overflow:auto; max-height: 420px; margin-top: 8px;">
+      <table>
+        <thead>
+          <tr><th>ID</th><th>PR</th><th>Event</th><th>Action</th><th>Status</th><th>Att.</th><th>Created</th><th>Session</th></tr>
+        </thead>
+        <tbody id="jobsBody"><tr><td colspan="8" class="muted">loading…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+<script>
+(function () {
+  "use strict";
+  // Field id -> settings key. All ids map 1:1 to lower_snake_case setting keys.
+  var FIELDS = ["gitea_url","gitea_token","webhook_secret","model","trigger_keywords",
+                "concurrency","codex_auth_mode","codex_api_key","repo_allowlist","timeout"];
+  var SECRETS = {gitea_token:1, webhook_secret:1, codex_api_key:1};
+  var REDACTED = "***set***";
+
+  function $(id){ return document.getElementById(id); }
+  function show(el, text, ok){ el.textContent = text; el.className = "msg " + (ok ? "ok" : "err"); }
+
+  function loadSettings(){
+    fetch("/admin/api/settings").then(function(r){ return r.json(); }).then(function(s){
+      FIELDS.forEach(function(k){
+        var el = $(k); if (!el) return;
+        var v = s[k] != null ? s[k] : "";
+        el.value = v;
+      });
+      show($("settingsMsg"), "loaded", true);
+    }).catch(function(e){ show($("settingsMsg"), "load failed: " + e, false); });
+  }
+
+  function saveSettings(){
+    var payload = {};
+    FIELDS.forEach(function(k){
+      var el = $(k); if (!el) return;
+      var v = el.value;
+      // Don't resubmit the redaction placeholder for secrets; the server skips
+      // it too, but this keeps the request clean.
+      if (SECRETS[k] && v === REDACTED) return;
+      payload[k] = v;
+    });
+    fetch("/admin/api/settings", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({settings: payload})
+    }).then(function(r){ return r.json().then(function(b){ return {ok:r.ok, b:b}; }); })
+      .then(function(res){
+        if (res.ok) { show($("settingsMsg"), "saved " + (res.b.updated||0) + " setting(s)", true); loadSettings(); }
+        else { show($("settingsMsg"), "save failed: " + (res.b.error||""), false); }
+      }).catch(function(e){ show($("settingsMsg"), "save failed: " + e, false); });
+  }
+
+  function uploadAuth(){
+    var f = $("authFile").files[0];
+    if (!f) { show($("authMsg"), "choose a file first", false); return; }
+    f.text().then(function(text){
+      return fetch("/admin/api/authfile", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: text
+      });
+    }).then(function(r){ return r.json().then(function(b){ return {ok:r.ok, b:b}; }); })
+      .then(function(res){
+        if (res.ok) show($("authMsg"), "saved to " + res.b.path, true);
+        else show($("authMsg"), "rejected: " + (res.b.error||""), false);
+      }).catch(function(e){ show($("authMsg"), "upload failed: " + e, false); });
+  }
+
+  function checkStatus(){
+    show($("statusMsg"), "checking…", true);
+    fetch("/admin/api/status").then(function(r){ return r.json(); }).then(function(s){
+      show($("statusMsg"), s.status || "(no status)", !!s.ok);
+    }).catch(function(e){ show($("statusMsg"), "status failed: " + e, false); });
+  }
+
+  function esc(s){ var d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+
+  function loadJobs(){
+    fetch("/admin/api/jobs").then(function(r){ return r.json(); }).then(function(jobs){
+      var body = $("jobsBody");
+      if (!jobs || !jobs.length) { body.innerHTML = '<tr><td colspan="8" class="muted">no jobs yet</td></tr>'; }
+      else {
+        body.innerHTML = jobs.map(function(j){
+          var pr = esc(j.owner) + "/" + esc(j.repo) + "#" + esc(j.number);
+          var st = esc(j.status);
+          var created = j.created_at ? esc(j.created_at.replace("T"," ").replace("Z","")) : "";
+          var sess = j.session_id ? "<code>" + esc(j.session_id.slice(0,8)) + "</code>" : "";
+          var errAttr = j.error ? ' title="' + esc(j.error) + '"' : "";
+          return "<tr" + errAttr + "><td>" + esc(j.id) + "</td><td>" + pr + "</td><td>" + esc(j.event) +
+                 "</td><td>" + esc(j.action) + "</td><td><span class='badge s-" + st + "'>" + st +
+                 "</span></td><td>" + esc(j.attempts) + "</td><td>" + created + "</td><td>" + sess + "</td></tr>";
+        }).join("");
+      }
+      $("jobsMeta").textContent = " updated " + new Date().toLocaleTimeString();
+    }).catch(function(e){ $("jobsBody").innerHTML = '<tr><td colspan="8" class="err">load failed: ' + esc(e) + '</td></tr>'; });
+  }
+
+  $("saveBtn").addEventListener("click", saveSettings);
+  $("reloadBtn").addEventListener("click", loadSettings);
+  $("uploadBtn").addEventListener("click", uploadAuth);
+  $("statusBtn").addEventListener("click", checkStatus);
+  $("jobsBtn").addEventListener("click", loadJobs);
+
+  loadSettings();
+  loadJobs();
+  setInterval(loadJobs, 10000);
+})();
+</script>
+</body>
+</html>
