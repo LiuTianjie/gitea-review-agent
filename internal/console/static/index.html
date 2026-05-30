@@ -112,6 +112,16 @@
     </div>
     <div class="row">
       <div>
+        <label for="codex_sandbox_mode">Codex 沙箱模式</label>
+        <select id="codex_sandbox_mode">
+          <option value="read-only">read-only</option>
+          <option value="workspace-write">workspace-write</option>
+          <option value="danger-full-access">danger-full-access（容器无 bwrap 时使用）</option>
+        </select>
+      </div>
+    </div>
+    <div class="row">
+      <div>
         <label for="repo_allowlist">仓库白名单（英文逗号分隔）</label>
         <input id="repo_allowlist" placeholder="owner/repo,owner2/repo2">
       </div>
@@ -167,7 +177,8 @@
   "use strict";
   // 字段 id -> 设置键。所有 id 与 lower_snake_case 的设置键一一对应。
   var FIELDS = ["gitea_url","gitea_token","webhook_secret","model","trigger_keywords",
-                "concurrency","codex_auth_mode","codex_api_key","repo_allowlist","timeout"];
+                "concurrency","codex_auth_mode","codex_api_key","codex_sandbox_mode",
+                "repo_allowlist","timeout"];
   var SECRETS = {gitea_token:1, webhook_secret:1, codex_api_key:1};
   var REDACTED = "***set***";
 
@@ -237,7 +248,7 @@
         "<p><strong>Gitea 地址：</strong><code>" + esc(c.gitea_url || "未加载") + "</code></p>" +
         "<p><strong>Gitea 令牌：</strong>" + (c.gitea_token_set ? "已加载" : "未加载") +
         "　<strong>Webhook 密钥：</strong>" + (c.webhook_secret_set ? "已加载" : "未加载") + "</p>" +
-        "<p><strong>模型：</strong><code>" + esc(c.model || "") + "</code>　<strong>鉴权：</strong><code>" + esc(c.codex_auth_mode || "") + "</code>　<strong>并发：</strong><code>" + esc(c.concurrency) + "</code></p>" +
+        "<p><strong>模型：</strong><code>" + esc(c.model || "") + "</code>　<strong>鉴权：</strong><code>" + esc(c.codex_auth_mode || "") + "</code>　<strong>沙箱：</strong><code>" + esc(c.codex_sandbox_mode || "") + "</code>　<strong>并发：</strong><code>" + esc(c.concurrency) + "</code></p>" +
         "<p><strong>配置来源：</strong><code>" + esc(c.config_source || "db-over-env") + "</code></p>" +
         "<p class='muted'>" + esc(c.runtime_reload_note || "") + "</p>";
       show($("effectiveMsg"), "已读取当前进程配置", true);

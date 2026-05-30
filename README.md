@@ -85,6 +85,7 @@ Env vars (all optional except `ADMIN_PASSWORD`; the console can set the rest):
 | `MODEL` | `gpt-5-codex` | codex model |
 | `CODEX_AUTH_MODE` | `authfile` | or `apikey` |
 | `CODEX_API_KEY` | — | apikey mode only (separately billed) |
+| `CODEX_SANDBOX_MODE` | `read-only` | set `danger-full-access` only when the container blocks Codex's read-only sandbox |
 | `CONCURRENCY` | `2` | worker count |
 | `TRIGGER_KEYWORDS` | `/review,@review` | comma-separated |
 | `REPO_ALLOWLIST` | — | comma-separated `owner/repo`; empty = all |

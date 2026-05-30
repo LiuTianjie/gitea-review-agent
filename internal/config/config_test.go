@@ -20,7 +20,7 @@ func TestLoadEnvDefaults(t *testing.T) {
 		"LISTEN_ADDR", "DB_PATH", "CACHE_DIR", "WORK_DIR", "CODEX_HOME", "MODEL",
 		"CODEX_AUTH_MODE", "CODEX_API_KEY", "GITEA_URL", "GITEA_TOKEN",
 		"WEBHOOK_SECRET", "ADMIN_PASSWORD", "TRIGGER_KEYWORDS", "CONCURRENCY",
-		"REPO_ALLOWLIST", "TIMEOUT", "SECRET_KEY",
+		"REPO_ALLOWLIST", "TIMEOUT", "SECRET_KEY", "CODEX_SANDBOX_MODE",
 	} {
 		t.Setenv(k, "")
 	}
@@ -45,6 +45,9 @@ func TestLoadEnvDefaults(t *testing.T) {
 	if c.CodexAuthMode != AuthModeAuthFile {
 		t.Errorf("CodexAuthMode = %q, want %q (default authfile)", c.CodexAuthMode, AuthModeAuthFile)
 	}
+	if c.CodexSandbox != DefaultSandboxMode {
+		t.Errorf("CodexSandbox = %q, want %q", c.CodexSandbox, DefaultSandboxMode)
+	}
 	if c.Concurrency != DefaultConcurrency {
 		t.Errorf("Concurrency = %d, want %d", c.Concurrency, DefaultConcurrency)
 	}
@@ -66,23 +69,24 @@ func TestLoadEnvDefaults(t *testing.T) {
 
 func TestLoadEnvValues(t *testing.T) {
 	setEnv(t, map[string]string{
-		"LISTEN_ADDR":      ":9090",
-		"DB_PATH":          "/tmp/db.sqlite",
-		"CACHE_DIR":        "/tmp/cache",
-		"WORK_DIR":         "/tmp/work",
-		"CODEX_HOME":       "/tmp/codex",
-		"GITEA_URL":        "https://git.example.com",
-		"GITEA_TOKEN":      "tok-123",
-		"WEBHOOK_SECRET":   "whsec",
-		"MODEL":            "gpt-5",
-		"CODEX_AUTH_MODE":  "apikey",
-		"CODEX_API_KEY":    "sk-abc",
-		"ADMIN_PASSWORD":   "hunter2",
-		"TRIGGER_KEYWORDS": "/review, @bot , please-review",
-		"CONCURRENCY":      "5",
-		"REPO_ALLOWLIST":   "acme/widgets, acme/gadgets",
-		"TIMEOUT":          "30s",
-		"SECRET_KEY":       "key",
+		"LISTEN_ADDR":        ":9090",
+		"DB_PATH":            "/tmp/db.sqlite",
+		"CACHE_DIR":          "/tmp/cache",
+		"WORK_DIR":           "/tmp/work",
+		"CODEX_HOME":         "/tmp/codex",
+		"GITEA_URL":          "https://git.example.com",
+		"GITEA_TOKEN":        "tok-123",
+		"WEBHOOK_SECRET":     "whsec",
+		"MODEL":              "gpt-5",
+		"CODEX_AUTH_MODE":    "apikey",
+		"CODEX_API_KEY":      "sk-abc",
+		"CODEX_SANDBOX_MODE": "danger-full-access",
+		"ADMIN_PASSWORD":     "hunter2",
+		"TRIGGER_KEYWORDS":   "/review, @bot , please-review",
+		"CONCURRENCY":        "5",
+		"REPO_ALLOWLIST":     "acme/widgets, acme/gadgets",
+		"TIMEOUT":            "30s",
+		"SECRET_KEY":         "key",
 	})
 
 	c := LoadEnv()
@@ -107,6 +111,9 @@ func TestLoadEnvValues(t *testing.T) {
 	}
 	if c.CodexAPIKey != "sk-abc" {
 		t.Errorf("CodexAPIKey = %q", c.CodexAPIKey)
+	}
+	if c.CodexSandbox != SandboxDangerFullAccess {
+		t.Errorf("CodexSandbox = %q, want danger-full-access", c.CodexSandbox)
 	}
 	if c.AdminPassword != "hunter2" {
 		t.Errorf("AdminPassword = %q", c.AdminPassword)
@@ -152,16 +159,17 @@ func TestApplyOverrides(t *testing.T) {
 	}
 
 	c.ApplyOverrides(map[string]string{
-		"gitea_url":        "https://db.example.com",
-		"gitea_token":      "db-tok",
-		"model":            "db-model",
-		"codex_auth_mode":  "apikey",
-		"codex_api_key":    "sk-db",
-		"webhook_secret":   "db-secret",
-		"trigger_keywords": "/lgtm,@review",
-		"concurrency":      "8",
-		"repo_allowlist":   "a/b",
-		"timeout":          "5m",
+		"gitea_url":          "https://db.example.com",
+		"gitea_token":        "db-tok",
+		"model":              "db-model",
+		"codex_auth_mode":    "apikey",
+		"codex_api_key":      "sk-db",
+		"codex_sandbox_mode": "workspace-write",
+		"webhook_secret":     "db-secret",
+		"trigger_keywords":   "/lgtm,@review",
+		"concurrency":        "8",
+		"repo_allowlist":     "a/b",
+		"timeout":            "5m",
 	})
 
 	if c.GiteaURL != "https://db.example.com" {
@@ -178,6 +186,9 @@ func TestApplyOverrides(t *testing.T) {
 	}
 	if c.CodexAPIKey != "sk-db" {
 		t.Errorf("CodexAPIKey not overridden: %q", c.CodexAPIKey)
+	}
+	if c.CodexSandbox != SandboxWorkspaceWrite {
+		t.Errorf("CodexSandbox not overridden: %q", c.CodexSandbox)
 	}
 	if c.WebhookSecret != "db-secret" {
 		t.Errorf("WebhookSecret not overridden: %q", c.WebhookSecret)
@@ -262,6 +273,13 @@ func TestValidateBadMode(t *testing.T) {
 	c := &Config{CodexAuthMode: "bogus", Concurrency: 1, Timeout: time.Minute}
 	if err := c.Validate(); err == nil {
 		t.Error("Validate(bogus mode) = nil, want error")
+	}
+}
+
+func TestValidateBadSandboxMode(t *testing.T) {
+	c := &Config{CodexAuthMode: AuthModeAuthFile, CodexSandbox: "bogus", Concurrency: 1, Timeout: time.Minute}
+	if err := c.Validate(); err == nil {
+		t.Error("Validate(bogus sandbox) = nil, want error")
 	}
 }
 

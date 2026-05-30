@@ -204,6 +204,26 @@ func TestRunner_ReviewResume(t *testing.T) {
 	}
 }
 
+func TestRunner_ReviewCustomSandbox(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "stub.log")
+	writeStub(t, logPath)
+
+	r := New(Options{CodexHome: t.TempDir(), SandboxMode: "danger-full-access"})
+
+	if _, err := r.Review(context.Background(), model.CodexInput{
+		Worktree: t.TempDir(),
+		BaseRef:  "main",
+	}); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+
+	logb, _ := os.ReadFile(logPath)
+	log := string(logb)
+	if !strings.Contains(log, "sandbox_mode=danger-full-access") {
+		t.Errorf("custom sandbox missing from args; log:\n%s", log)
+	}
+}
+
 func TestRunner_Ask(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "stub.log")
 	writeStub(t, logPath)

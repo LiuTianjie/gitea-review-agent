@@ -19,6 +19,13 @@ const (
 	AuthModeAPIKey   = "apikey"   // CODEX_API_KEY env / setting
 )
 
+// Codex sandbox modes are passed through to `codex exec -c sandbox_mode=...`.
+const (
+	SandboxReadOnly         = "read-only"
+	SandboxWorkspaceWrite   = "workspace-write"
+	SandboxDangerFullAccess = "danger-full-access"
+)
+
 // Defaults applied when neither env nor DB settings provide a value.
 const (
 	DefaultListenAddr  = ":8080"
@@ -28,6 +35,7 @@ const (
 	DefaultCodexHome   = "/codex-home"
 	DefaultModel       = "gpt-5-codex"
 	DefaultAuthMode    = AuthModeAuthFile
+	DefaultSandboxMode = SandboxReadOnly
 	DefaultConcurrency = 2
 	DefaultTimeout     = 30 * time.Minute
 )
@@ -53,6 +61,7 @@ type Config struct {
 	Model         string
 	CodexAuthMode string
 	CodexAPIKey   string
+	CodexSandbox  string
 
 	// Console
 	AdminPassword string
@@ -82,6 +91,7 @@ func LoadEnv() *Config {
 		Model:           getEnv("MODEL", DefaultModel),
 		CodexAuthMode:   normalizeAuthMode(getEnv("CODEX_AUTH_MODE", DefaultAuthMode)),
 		CodexAPIKey:     os.Getenv("CODEX_API_KEY"),
+		CodexSandbox:    normalizeSandboxMode(getEnv("CODEX_SANDBOX_MODE", DefaultSandboxMode)),
 		AdminPassword:   os.Getenv("ADMIN_PASSWORD"),
 		TriggerKeywords: parseList(os.Getenv("TRIGGER_KEYWORDS"), DefaultTriggerKeywords),
 		Concurrency:     parseInt(os.Getenv("CONCURRENCY"), DefaultConcurrency),
@@ -116,6 +126,9 @@ func (c *Config) ApplyOverrides(settings map[string]string) {
 	}
 	if v, ok := settings["codex_api_key"]; ok {
 		c.CodexAPIKey = v
+	}
+	if v, ok := settings["codex_sandbox_mode"]; ok {
+		c.CodexSandbox = normalizeSandboxMode(v)
 	}
 	if v, ok := settings["admin_password"]; ok {
 		c.AdminPassword = v
@@ -154,6 +167,13 @@ func (c *Config) Validate() error {
 	}
 	if c.Concurrency < 1 {
 		return fmt.Errorf("concurrency must be >= 1, got %d", c.Concurrency)
+	}
+	sandboxMode := normalizeSandboxMode(c.CodexSandbox)
+	switch sandboxMode {
+	case SandboxReadOnly, SandboxWorkspaceWrite, SandboxDangerFullAccess:
+	default:
+		return fmt.Errorf("invalid codex_sandbox_mode %q (want %q, %q, or %q)",
+			c.CodexSandbox, SandboxReadOnly, SandboxWorkspaceWrite, SandboxDangerFullAccess)
 	}
 	if c.Timeout <= 0 {
 		return fmt.Errorf("timeout must be > 0, got %s", c.Timeout)
@@ -243,4 +263,16 @@ func normalizeAuthMode(s string) string {
 		return DefaultAuthMode
 	}
 	return s
+}
+
+func normalizeSandboxMode(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	switch s {
+	case SandboxReadOnly, SandboxWorkspaceWrite, SandboxDangerFullAccess:
+		return s
+	case "":
+		return DefaultSandboxMode
+	default:
+		return s
+	}
 }

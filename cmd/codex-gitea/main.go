@@ -59,9 +59,10 @@ func main() {
 	cache := gitcache.New(cfg.CacheDir, cfg.WorkDir, gitcache.WithToken(cfg.GiteaToken))
 
 	codexOpts := codex.Options{
-		CodexHome: cfg.CodexHome,
-		Model:     cfg.Model,
-		Timeout:   cfg.Timeout,
+		CodexHome:   cfg.CodexHome,
+		Model:       cfg.Model,
+		SandboxMode: cfg.CodexSandbox,
+		Timeout:     cfg.Timeout,
 	}
 	if cfg.CodexAuthMode == "apikey" {
 		codexOpts.APIKey = cfg.CodexAPIKey

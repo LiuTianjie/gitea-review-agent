@@ -47,6 +47,8 @@ type Options struct {
 	Model string
 	// APIKey, when set, runs codex in api-key mode (CODEX_API_KEY).
 	APIKey string
+	// SandboxMode is passed to codex as sandbox_mode. Defaults to read-only.
+	SandboxMode string
 	// Timeout bounds a single invocation. Defaults to 30m.
 	Timeout time.Duration
 }
@@ -57,6 +59,7 @@ type Runner struct {
 	codexHome string
 	model     string
 	apiKey    string
+	sandbox   string
 	timeout   time.Duration
 }
 
@@ -75,11 +78,16 @@ func New(opts Options) *Runner {
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
+	sandbox := opts.SandboxMode
+	if strings.TrimSpace(sandbox) == "" {
+		sandbox = "read-only"
+	}
 	return &Runner{
 		bin:       bin,
 		codexHome: opts.CodexHome,
 		model:     opts.Model,
 		apiKey:    opts.APIKey,
+		sandbox:   sandbox,
 		timeout:   timeout,
 	}
 }
@@ -114,7 +122,7 @@ func (r *Runner) reviewBaseArgs(schemaPath, outPath string) []string {
 		"--output-schema", schemaPath,
 		"-o", outPath,
 		"-c", "approval_policy=never",
-		"-c", "sandbox_mode=read-only",
+		"-c", "sandbox_mode=" + r.sandbox,
 		"--skip-git-repo-check",
 	}
 	if r.model != "" {
@@ -194,7 +202,7 @@ func (r *Runner) Ask(ctx context.Context, sessionID, worktree, question string) 
 		"exec", "resume", sessionID, prompt,
 		"--json",
 		"-c", "approval_policy=never",
-		"-c", "sandbox_mode=read-only",
+		"-c", "sandbox_mode=" + r.sandbox,
 		"--skip-git-repo-check",
 	}
 	if r.model != "" {

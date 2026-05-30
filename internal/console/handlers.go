@@ -205,6 +205,7 @@ func (c *Console) handleEffectiveConfig(w http.ResponseWriter, r *http.Request) 
 		"webhook_secret_set":  strings.TrimSpace(c.cfg.WebhookSecret) != "",
 		"model":               c.cfg.Model,
 		"codex_auth_mode":     c.cfg.CodexAuthMode,
+		"codex_sandbox_mode":  c.cfg.CodexSandbox,
 		"concurrency":         c.cfg.Concurrency,
 		"trigger_keywords":    strings.Join(c.cfg.TriggerKeywords, ","),
 		"repo_allowlist":      strings.Join(c.cfg.RepoAllowlist, ","),
