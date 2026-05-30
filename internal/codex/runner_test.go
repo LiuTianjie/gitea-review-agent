@@ -153,6 +153,7 @@ func TestRunner_ReviewNew(t *testing.T) {
 		"--output-schema",
 		"--skip-git-repo-check",
 		"-o",
+		"Write all human-facing review output in Simplified Chinese",
 	} {
 		if !strings.Contains(log, want) {
 			t.Errorf("expected arg %q in stub log:\n%s", want, log)
@@ -198,6 +199,9 @@ func TestRunner_ReviewResume(t *testing.T) {
 	if !strings.Contains(log, "head moved abc->def") {
 		t.Errorf("resume note not in prompt; log:\n%s", log)
 	}
+	if !strings.Contains(log, "Write all human-facing review output in Simplified Chinese") {
+		t.Errorf("resume prompt missing language instruction; log:\n%s", log)
+	}
 }
 
 func TestRunner_Ask(t *testing.T) {
@@ -221,6 +225,9 @@ func TestRunner_Ask(t *testing.T) {
 	}
 	if !strings.Contains(log, "is this fixed?") {
 		t.Errorf("Ask question missing from args; log:\n%s", log)
+	}
+	if !strings.Contains(log, "Write all human-facing review output in Simplified Chinese") {
+		t.Errorf("Ask prompt missing language instruction; log:\n%s", log)
 	}
 }
 

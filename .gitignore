@@ -34,3 +34,5 @@ coverage.*
 .idea/
 .vscode/
 *.swp
+
+luma.yaml

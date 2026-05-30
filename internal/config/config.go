@@ -29,7 +29,7 @@ const (
 	DefaultModel       = "gpt-5-codex"
 	DefaultAuthMode    = AuthModeAuthFile
 	DefaultConcurrency = 2
-	DefaultTimeout     = 10 * time.Minute
+	DefaultTimeout     = 30 * time.Minute
 )
 
 // DefaultTriggerKeywords are the comment phrases that trigger a review.

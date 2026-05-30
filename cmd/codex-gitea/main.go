@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -34,11 +35,17 @@ func main() {
 	}
 	defer st.Close()
 
-	// DB settings override env defaults.
-	if settings, err := st.AllSettings(context.Background()); err == nil {
-		cfg.ApplyOverrides(settings)
+	// DB settings normally override env defaults. CONFIG_SOURCE=env makes
+	// container env the source of truth for deployments that should not depend
+	// on the mutable admin-console settings table.
+	if strings.EqualFold(os.Getenv("CONFIG_SOURCE"), "env") {
+		logger.Printf("config source: env (database settings ignored)")
 	} else {
-		logger.Printf("load settings: %v", err)
+		if settings, err := st.AllSettings(context.Background()); err == nil {
+			cfg.ApplyOverrides(settings)
+		} else {
+			logger.Printf("load settings: %v", err)
+		}
 	}
 	for _, w := range cfg.Warnings() {
 		logger.Printf("config warning: %s", w)

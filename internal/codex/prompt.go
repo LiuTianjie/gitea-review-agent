@@ -5,6 +5,11 @@ import (
 	"strings"
 )
 
+const reviewLanguageInstruction = `Language rules:
+- Write all human-facing review output in Simplified Chinese by default, including summary, finding titles, finding bodies, and answers to /review questions.
+- Keep code, identifiers, file paths, command names, API names, error messages, and quoted source text in their original language.
+- Do not use English prose unless the user's question explicitly asks for English.`
+
 // buildReviewPrompt produces the prompt for a fresh structured review.
 // It instructs codex to diff base..HEAD itself and report findings statically,
 // without building/running/testing the code.
@@ -22,6 +27,8 @@ Hard rules:
 - Do NOT modify any files.
 - You may run read-only inspection commands (git diff, nl, cat, grep) to understand the code.
 - Base your review strictly on the diff content; do not invent issues outside the changed code.
+
+`+reviewLanguageInstruction+`
 
 For every concrete problem you find, emit a structured finding with:
 - path: file path relative to the repository root (as shown by git diff).
@@ -61,6 +68,8 @@ Hard rules (unchanged):
 - Do NOT modify any files.
 - Only read-only inspection commands are allowed.
 
+`+reviewLanguageInstruction+`
+
 Compare against your previous review:
 - For issues you reported earlier that are now fixed, do NOT include them in findings; mention in the summary that they were resolved.
 - Report any remaining or newly introduced issues as fresh structured findings (path, line, side, severity, title, body).
@@ -71,5 +80,13 @@ Return ONLY the structured JSON result conforming to the provided output schema.
 	if strings.TrimSpace(note) != "" {
 		fmt.Fprintf(&b, "\n\nWhat changed since last review:\n%s", note)
 	}
+	return b.String()
+}
+
+func buildAskPrompt(question string) string {
+	var b strings.Builder
+	b.WriteString(reviewLanguageInstruction)
+	b.WriteString("\n\nUser question:\n")
+	b.WriteString(strings.TrimSpace(question))
 	return b.String()
 }

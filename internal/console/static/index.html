@@ -53,6 +53,12 @@
   .s-pending { background: #fef9c3; color: #854d0e; }
   .s-superseded { background: #e5e7eb; color: #374151; }
   code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  pre.log {
+    margin: 6px 0 10px; padding: 10px; border: 1px solid #e5e7eb; border-radius: 6px;
+    background: #f9fafb; color: #7f1d1d; white-space: pre-wrap; word-break: break-word;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+  }
+  .compact { font-size: 12px; color: #4b5563; }
 </style>
 </head>
 <body>
@@ -111,13 +117,20 @@
       </div>
       <div>
         <label for="timeout">Codex 超时</label>
-        <input id="timeout" placeholder="10m">
+        <input id="timeout" placeholder="30m">
       </div>
     </div>
     <button id="saveBtn">保存设置</button>
     <button class="secondary" id="reloadBtn">重新加载</button>
     <div class="msg" id="settingsMsg"></div>
-    <p class="muted">密钥字段在已配置时显示 <code>***set***</code>。保持原样即沿用已存的值，输入新值则替换。</p>
+    <p class="muted">密钥字段在已配置时显示 <code>***set***</code>。保持原样即沿用已存的值，输入新值则替换。保存会写入数据库；当前 worker/client 需要重启服务后才会使用新配置。</p>
+  </section>
+
+  <section>
+    <h2>当前运行配置</h2>
+    <button class="secondary" id="effectiveBtn">检查运行配置</button>
+    <div class="msg" id="effectiveMsg"></div>
+    <div id="effectiveConfig" class="compact"></div>
   </section>
 
   <section>
@@ -141,9 +154,9 @@
     <div style="overflow:auto; max-height: 420px; margin-top: 8px;">
       <table>
         <thead>
-          <tr><th>ID</th><th>PR</th><th>事件</th><th>动作</th><th>状态</th><th>次数</th><th>创建时间</th><th>会话</th></tr>
+          <tr><th>ID</th><th>PR</th><th>事件</th><th>动作</th><th>状态</th><th>次数</th><th>创建时间</th><th>会话</th><th>错误/日志</th></tr>
         </thead>
-        <tbody id="jobsBody"><tr><td colspan="8" class="muted">加载中…</td></tr></tbody>
+        <tbody id="jobsBody"><tr><td colspan="9" class="muted">加载中…</td></tr></tbody>
       </table>
     </div>
   </section>
@@ -187,7 +200,7 @@
       body: JSON.stringify({settings: payload})
     }).then(function(r){ return r.json().then(function(b){ return {ok:r.ok, b:b}; }); })
       .then(function(res){
-        if (res.ok) { show($("settingsMsg"), "已保存 " + (res.b.updated||0) + " 项设置", true); loadSettings(); }
+        if (res.ok) { show($("settingsMsg"), "已保存 " + (res.b.updated||0) + " 项设置；重启服务后 worker/client 才会使用新值", true); loadSettings(); loadEffectiveConfig(); }
         else { show($("settingsMsg"), "保存失败：" + (res.b.error||""), false); }
       }).catch(function(e){ show($("settingsMsg"), "保存失败：" + e, false); });
   }
@@ -217,33 +230,49 @@
 
   function esc(s){ var d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
 
+  function loadEffectiveConfig(){
+    fetch("/admin/api/effective-config").then(function(r){ return r.json(); }).then(function(c){
+      if (!c.ok) { show($("effectiveMsg"), "读取失败：" + (c.error || ""), false); return; }
+      $("effectiveConfig").innerHTML =
+        "<p><strong>Gitea 地址：</strong><code>" + esc(c.gitea_url || "未加载") + "</code></p>" +
+        "<p><strong>Gitea 令牌：</strong>" + (c.gitea_token_set ? "已加载" : "未加载") +
+        "　<strong>Webhook 密钥：</strong>" + (c.webhook_secret_set ? "已加载" : "未加载") + "</p>" +
+        "<p><strong>模型：</strong><code>" + esc(c.model || "") + "</code>　<strong>鉴权：</strong><code>" + esc(c.codex_auth_mode || "") + "</code>　<strong>并发：</strong><code>" + esc(c.concurrency) + "</code></p>" +
+        "<p><strong>配置来源：</strong><code>" + esc(c.config_source || "db-over-env") + "</code></p>" +
+        "<p class='muted'>" + esc(c.runtime_reload_note || "") + "</p>";
+      show($("effectiveMsg"), "已读取当前进程配置", true);
+    }).catch(function(e){ show($("effectiveMsg"), "读取失败：" + e, false); });
+  }
+
   function loadJobs(){
     fetch("/admin/api/jobs").then(function(r){ return r.json(); }).then(function(jobs){
       var body = $("jobsBody");
-      if (!jobs || !jobs.length) { body.innerHTML = '<tr><td colspan="8" class="muted">暂无任务</td></tr>'; }
+      if (!jobs || !jobs.length) { body.innerHTML = '<tr><td colspan="9" class="muted">暂无任务</td></tr>'; }
       else {
         body.innerHTML = jobs.map(function(j){
           var pr = esc(j.owner) + "/" + esc(j.repo) + "#" + esc(j.number);
           var st = esc(j.status);
           var created = j.created_at ? esc(j.created_at.replace("T"," ").replace("Z","")) : "";
           var sess = j.session_id ? "<code>" + esc(j.session_id.slice(0,8)) + "</code>" : "";
-          var errAttr = j.error ? ' title="' + esc(j.error) + '"' : "";
-          return "<tr" + errAttr + "><td>" + esc(j.id) + "</td><td>" + pr + "</td><td>" + esc(j.event) +
+          var err = j.error ? "<pre class='log'>" + esc(j.error) + "</pre>" : "";
+          return "<tr><td>" + esc(j.id) + "</td><td>" + pr + "</td><td>" + esc(j.event) +
                  "</td><td>" + esc(j.action) + "</td><td><span class='badge s-" + st + "'>" + st +
-                 "</span></td><td>" + esc(j.attempts) + "</td><td>" + created + "</td><td>" + sess + "</td></tr>";
+                 "</span></td><td>" + esc(j.attempts) + "</td><td>" + created + "</td><td>" + sess + "</td><td>" + err + "</td></tr>";
         }).join("");
       }
       $("jobsMeta").textContent = " 更新于 " + new Date().toLocaleTimeString();
-    }).catch(function(e){ $("jobsBody").innerHTML = '<tr><td colspan="8" class="err">加载失败：' + esc(e) + '</td></tr>'; });
+    }).catch(function(e){ $("jobsBody").innerHTML = '<tr><td colspan="9" class="err">加载失败：' + esc(e) + '</td></tr>'; });
   }
 
   $("saveBtn").addEventListener("click", saveSettings);
   $("reloadBtn").addEventListener("click", loadSettings);
+  $("effectiveBtn").addEventListener("click", loadEffectiveConfig);
   $("uploadBtn").addEventListener("click", uploadAuth);
   $("statusBtn").addEventListener("click", checkStatus);
   $("jobsBtn").addEventListener("click", loadJobs);
 
   loadSettings();
+  loadEffectiveConfig();
   loadJobs();
   setInterval(loadJobs, 10000);
 })();

@@ -51,6 +51,7 @@ func (c *Console) Routes() http.Handler {
 	mux.HandleFunc("POST /admin/api/settings", c.handlePostSettings)
 	mux.HandleFunc("POST /admin/api/authfile", c.handlePostAuthFile)
 	mux.HandleFunc("GET /admin/api/status", c.handleStatus)
+	mux.HandleFunc("GET /admin/api/effective-config", c.handleEffectiveConfig)
 	mux.HandleFunc("GET /admin/api/jobs", c.handleJobs)
 
 	password := ""
@@ -190,6 +191,26 @@ func (c *Console) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": status})
+}
+
+func (c *Console) handleEffectiveConfig(w http.ResponseWriter, r *http.Request) {
+	if c.cfg == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "config not available"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":                  true,
+		"gitea_url":           c.cfg.GiteaURL,
+		"gitea_token_set":     strings.TrimSpace(c.cfg.GiteaToken) != "",
+		"webhook_secret_set":  strings.TrimSpace(c.cfg.WebhookSecret) != "",
+		"model":               c.cfg.Model,
+		"codex_auth_mode":     c.cfg.CodexAuthMode,
+		"concurrency":         c.cfg.Concurrency,
+		"trigger_keywords":    strings.Join(c.cfg.TriggerKeywords, ","),
+		"repo_allowlist":      strings.Join(c.cfg.RepoAllowlist, ","),
+		"config_source":       os.Getenv("CONFIG_SOURCE"),
+		"runtime_reload_note": "保存设置会写入数据库；当前 worker/client 在进程启动时读取配置，重启服务后才会使用新值。",
+	})
 }
 
 // jobView is the JSON shape returned to the console, with PRRef flattened.

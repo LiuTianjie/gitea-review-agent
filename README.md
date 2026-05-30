@@ -88,7 +88,7 @@ Env vars (all optional except `ADMIN_PASSWORD`; the console can set the rest):
 | `CONCURRENCY` | `2` | worker count |
 | `TRIGGER_KEYWORDS` | `/review,@review` | comma-separated |
 | `REPO_ALLOWLIST` | — | comma-separated `owner/repo`; empty = all |
-| `TIMEOUT` | `10m` | per codex run |
+| `TIMEOUT` | `30m` | per codex run |
 
 ## Security
 

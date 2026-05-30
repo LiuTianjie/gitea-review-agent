@@ -15,7 +15,7 @@ import (
 )
 
 // defaultTimeout bounds a single codex invocation when none is configured.
-const defaultTimeout = 10 * time.Minute
+const defaultTimeout = 30 * time.Minute
 
 // secretEnvKeys are environment variables that must never reach the codex
 // subprocess (and thus the worktree it inspects). The orchestrator's Gitea and
@@ -47,7 +47,7 @@ type Options struct {
 	Model string
 	// APIKey, when set, runs codex in api-key mode (CODEX_API_KEY).
 	APIKey string
-	// Timeout bounds a single invocation. Defaults to 10m.
+	// Timeout bounds a single invocation. Defaults to 30m.
 	Timeout time.Duration
 }
 
@@ -189,8 +189,9 @@ func (r *Runner) Ask(ctx context.Context, sessionID, worktree, question string) 
 	if sessionID == "" {
 		return "", fmt.Errorf("codex ask: empty session id")
 	}
+	prompt := buildAskPrompt(question)
 	args := []string{
-		"exec", "resume", sessionID, question,
+		"exec", "resume", sessionID, prompt,
 		"--json",
 		"-c", "approval_policy=never",
 		"-c", "sandbox_mode=read-only",

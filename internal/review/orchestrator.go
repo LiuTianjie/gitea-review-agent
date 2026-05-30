@@ -122,7 +122,7 @@ func (o *Orchestrator) review(ctx context.Context, ev *model.WebhookEvent, isUpd
 	}
 	if isUpdate && sessionID != "" {
 		in.SessionID = sessionID
-		in.Note = fmt.Sprintf("The PR head moved from %s to %s. Re-review the current diff against %s and note which previously-reported issues are now fixed.", shortSHA(prevHead), shortSHA(ev.HeadSHA), ev.BaseRef)
+		in.Note = fmt.Sprintf("PR head 已从 %s 更新到 %s。请基于 %s 重新审查当前 diff，并在摘要中说明之前报告的问题哪些已经修复。", shortSHA(prevHead), shortSHA(ev.HeadSHA), ev.BaseRef)
 	}
 
 	result, err := o.Codex.Review(ctx, in)
@@ -145,7 +145,7 @@ func (o *Orchestrator) review(ctx context.Context, ev *model.WebhookEvent, isUpd
 
 	// Dismiss our previous review so stale comments don't pile up.
 	if isUpdate && prevReviewID != 0 {
-		if err := o.Gitea.DismissReview(ctx, pr, prevReviewID, "Superseded by re-review after new commits."); err != nil {
+		if err := o.Gitea.DismissReview(ctx, pr, prevReviewID, "新提交触发了重新审查，此前审查已被替代。"); err != nil {
 			o.logf("dismiss prior review %d: %v", prevReviewID, err)
 		}
 	}
@@ -190,7 +190,7 @@ func (o *Orchestrator) handleComment(ctx context.Context, ev *model.WebhookEvent
 		return fmt.Errorf("get pull: %w", err)
 	}
 	if prev == nil || prev.SessionID == "" {
-		_, perr := o.Gitea.PostComment(ctx, ev.PR, "I haven't reviewed this PR yet, so I have no session to answer from. Push a commit or reopen the PR to trigger a review first.")
+		_, perr := o.Gitea.PostComment(ctx, ev.PR, "我还没有审查过这个 PR，因此没有可继续的会话。请先推送一次提交或重新打开 PR 来触发审查。")
 		return perr
 	}
 
@@ -218,7 +218,7 @@ func (o *Orchestrator) matchTrigger(body string) (string, bool) {
 		if idx := strings.Index(body, kw); idx >= 0 {
 			rest := strings.TrimSpace(body[idx+len(kw):])
 			if rest == "" {
-				rest = "Please re-review the current diff and answer any open questions."
+				rest = "请重新审查当前 diff，并回答仍然需要关注的问题。"
 			}
 			return rest, true
 		}
@@ -251,17 +251,17 @@ func formatFinding(f model.Finding) string {
 
 func buildSummary(r *model.ReviewResult, unmapped []model.Finding) string {
 	var b strings.Builder
-	b.WriteString("## Codex review\n\n")
+	b.WriteString("## Codex 审查\n\n")
 	b.WriteString(r.Summary)
-	b.WriteString(fmt.Sprintf("\n\nOverall severity: **%s**\n", r.OverallSeverity))
+	b.WriteString(fmt.Sprintf("\n\n整体严重程度：**%s**\n", r.OverallSeverity))
 	if len(unmapped) > 0 {
-		b.WriteString("\n### Findings outside the diff\n\n")
+		b.WriteString("\n### 无法映射到 diff 行的问题\n\n")
 		for _, f := range unmapped {
 			b.WriteString(fmt.Sprintf("- **[%s] %s** (`%s:%d`): %s\n",
 				strings.ToUpper(string(f.Severity)), f.Title, f.Path, f.Line, f.Body))
 		}
 	}
-	b.WriteString("\n_Static review only — code was not built or executed._")
+	b.WriteString("\n_仅静态审查，未构建或执行代码。_")
 	return b.String()
 }
 
