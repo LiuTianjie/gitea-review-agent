@@ -74,7 +74,7 @@ func isPRPayload(raw json.RawMessage) bool {
 // An unrecognized eventType returns an error.
 func Parse(eventType string, body []byte) (*model.WebhookEvent, error) {
 	switch model.EventType(eventType) {
-	case model.EventPullRequest:
+	case model.EventPullRequest, model.EventPullRequestSync:
 		var p pullRequestPayload
 		if err := json.Unmarshal(body, &p); err != nil {
 			return nil, fmt.Errorf("webhook: parse pull_request payload: %w", err)

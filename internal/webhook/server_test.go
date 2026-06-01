@@ -124,6 +124,23 @@ func TestParsePullRequest(t *testing.T) {
 	}
 }
 
+func TestParsePullRequestSync(t *testing.T) {
+	body := strings.Replace(pullRequestBody, `"action":"opened"`, `"action":"synchronized"`, 1)
+	ev, err := Parse("pull_request_sync", []byte(body))
+	if err != nil {
+		t.Fatalf("Parse pull_request_sync: unexpected error: %v", err)
+	}
+	if ev.Event != model.EventPullRequest {
+		t.Errorf("Event = %q, want normalized pull_request", ev.Event)
+	}
+	if ev.Action != "synchronized" {
+		t.Errorf("Action = %q, want synchronized", ev.Action)
+	}
+	if ev.PR.Number != 12 || ev.HeadSHA != "abc123" {
+		t.Errorf("sync event parsed incorrectly: %+v", ev)
+	}
+}
+
 func TestParseIssueCommentIsPR(t *testing.T) {
 	ev, err := Parse("issue_comment", []byte(issueCommentPRBody))
 	if err != nil {

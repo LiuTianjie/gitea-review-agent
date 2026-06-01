@@ -47,8 +47,9 @@ const (
 type EventType string
 
 const (
-	EventPullRequest  EventType = "pull_request"
-	EventIssueComment EventType = "issue_comment"
+	EventPullRequest     EventType = "pull_request"
+	EventPullRequestSync EventType = "pull_request_sync"
+	EventIssueComment    EventType = "issue_comment"
 )
 
 // JobStatus tracks a job through the queue.

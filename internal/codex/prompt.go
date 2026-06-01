@@ -86,6 +86,8 @@ Return ONLY the structured JSON result conforming to the provided output schema.
 func buildAskPrompt(question string) string {
 	var b strings.Builder
 	b.WriteString(reviewLanguageInstruction)
+	b.WriteString("\n- Answer /review questions in plain Markdown text, not JSON.")
+	b.WriteString("\n- If you re-evaluate findings, summarize them for a human reader instead of returning the structured review schema.")
 	b.WriteString("\n\nUser question:\n")
 	b.WriteString(strings.TrimSpace(question))
 	return b.String()

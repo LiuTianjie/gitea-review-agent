@@ -295,6 +295,33 @@ func TestRunner_ReviewEmptyWorktree(t *testing.T) {
 	}
 }
 
+func TestNormalizeReviewResult_UnwrapsJSONSummary(t *testing.T) {
+	r := &model.ReviewResult{
+		Summary: `{"summary":"重新审查后还有 1 个问题。","overall_severity":"low","findings":[{"path":"a.ts","line":7,"side":"NEW","severity":"low","title":"边界问题","body":"说明"}]}`,
+	}
+	normalizeReviewResult(r)
+	if r.Summary != "重新审查后还有 1 个问题。" {
+		t.Fatalf("Summary = %q", r.Summary)
+	}
+	if r.OverallSeverity != model.SeverityLow {
+		t.Fatalf("OverallSeverity = %q", r.OverallSeverity)
+	}
+	if len(r.Findings) != 1 || r.Findings[0].Title != "边界问题" {
+		t.Fatalf("Findings = %+v", r.Findings)
+	}
+}
+
+func TestHumanizeStructuredAnswer(t *testing.T) {
+	raw := `{"summary":"重新审查后还有 1 个问题。","overall_severity":"low","findings":[{"path":"a.ts","line":7,"side":"NEW","severity":"low","title":"边界问题","body":"说明"}]}`
+	got := humanizeStructuredAnswer(raw)
+	if strings.Contains(got, `{"summary"`) {
+		t.Fatalf("answer still contains raw JSON: %s", got)
+	}
+	if !strings.Contains(got, "重新审查后还有 1 个问题。") || !strings.Contains(got, "`a.ts:7`") {
+		t.Fatalf("humanized answer missing expected content: %s", got)
+	}
+}
+
 func TestNew_CodexBinOverride(t *testing.T) {
 	t.Setenv("CODEX_BIN", "/custom/path/codex")
 	r := New(Options{Bin: "codex"})

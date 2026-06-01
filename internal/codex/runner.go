@@ -183,6 +183,7 @@ func (r *Runner) Review(ctx context.Context, in model.CodexInput) (*model.Review
 	if err := json.Unmarshal(data, &result); err != nil {
 		return nil, fmt.Errorf("codex review: parse output file: %w", err)
 	}
+	normalizeReviewResult(&result)
 
 	result.SessionID = sr.ThreadID
 	if result.SessionID == "" {
@@ -220,7 +221,7 @@ func (r *Runner) Ask(ctx context.Context, sessionID, worktree, question string) 
 	if sr.LastAgentMessage == "" {
 		return "", fmt.Errorf("codex ask: no agent message in response")
 	}
-	return sr.LastAgentMessage, nil
+	return humanizeStructuredAnswer(sr.LastAgentMessage), nil
 }
 
 // Status reports codex auth state by running `codex login status`.
@@ -291,4 +292,51 @@ func lastLines(s string, n int) string {
 		return s
 	}
 	return strings.Join(lines[len(lines)-n:], "\n")
+}
+
+func normalizeReviewResult(result *model.ReviewResult) {
+	if result == nil {
+		return
+	}
+	trimmed := strings.TrimSpace(result.Summary)
+	if !strings.HasPrefix(trimmed, "{") {
+		return
+	}
+	var nested model.ReviewResult
+	if err := json.Unmarshal([]byte(trimmed), &nested); err != nil {
+		return
+	}
+	if strings.TrimSpace(nested.Summary) == "" && len(nested.Findings) == 0 && nested.OverallSeverity == "" {
+		return
+	}
+	sessionID := result.SessionID
+	*result = nested
+	result.SessionID = sessionID
+}
+
+func humanizeStructuredAnswer(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "{") {
+		return text
+	}
+	var result model.ReviewResult
+	if err := json.Unmarshal([]byte(trimmed), &result); err != nil {
+		return text
+	}
+	if strings.TrimSpace(result.Summary) == "" && len(result.Findings) == 0 && result.OverallSeverity == "" {
+		return text
+	}
+	var b strings.Builder
+	b.WriteString(result.Summary)
+	if result.OverallSeverity != "" {
+		fmt.Fprintf(&b, "\n\n整体严重程度：**%s**", result.OverallSeverity)
+	}
+	if len(result.Findings) > 0 {
+		b.WriteString("\n\n需要关注的问题：\n")
+		for _, f := range result.Findings {
+			fmt.Fprintf(&b, "- **[%s] %s** (`%s:%d`): %s\n",
+				strings.ToUpper(string(f.Severity)), f.Title, f.Path, f.Line, f.Body)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
