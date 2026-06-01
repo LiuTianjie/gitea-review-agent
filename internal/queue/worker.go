@@ -59,6 +59,15 @@ func (q *Queue) logf(format string, args ...any) {
 	}
 }
 
+func (q *Queue) jobLog(jobID int64, stage, message string) {
+	if q.store != nil {
+		if err := q.store.AppendJobLog(context.Background(), jobID, stage, message); err != nil {
+			q.logf("job %d log %s: %v", jobID, stage, err)
+		}
+	}
+	q.logf("job %d [%s] %s", jobID, stage, message)
+}
+
 // Notify wakes the pool to claim immediately (call after enqueuing).
 func (q *Queue) Notify() {
 	select {
@@ -133,7 +142,10 @@ func (q *Queue) run(parent context.Context, job *model.Job) {
 
 	// Serialize per PR (deterministic worktree path can't be shared).
 	lock := q.keyLock(key)
-	lock.Lock()
+	if !lock.TryLock() {
+		q.jobLog(job.ID, "queue", "waiting for previous job on "+key)
+		lock.Lock()
+	}
 	defer lock.Unlock()
 
 	jobCtx, cancel := context.WithCancel(parent)
@@ -150,6 +162,7 @@ func (q *Queue) run(parent context.Context, job *model.Job) {
 		cancel()
 	}()
 
+	q.jobLog(job.ID, "queue", "started worker run")
 	err := q.proc.Process(jobCtx, job)
 	status := model.JobDone
 	msg := ""
@@ -164,5 +177,7 @@ func (q *Queue) run(parent context.Context, job *model.Job) {
 	}
 	if ferr := q.store.FinishJob(context.Background(), job.ID, status, msg); ferr != nil {
 		q.logf("finish job %d: %v", job.ID, ferr)
+	} else {
+		q.jobLog(job.ID, "queue", "finished with status "+string(status))
 	}
 }

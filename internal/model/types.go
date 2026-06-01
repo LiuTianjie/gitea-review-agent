@@ -220,8 +220,18 @@ type JobView struct {
 	Attempts   int
 	Error      string
 	CreatedAt  time.Time
+	StartedAt  *time.Time
 	FinishedAt *time.Time
 	SessionID  string
+	Logs       []JobLog
+}
+
+// JobLog is a timestamped progress entry for a queued job.
+type JobLog struct {
+	ID        int64
+	Stage     string
+	Message   string
+	CreatedAt time.Time
 }
 
 // ---------- Ports (interfaces) ----------
@@ -234,6 +244,7 @@ type Store interface {
 	ClaimJob(ctx context.Context) (*Job, error) // next pending -> running; nil if none
 	FinishJob(ctx context.Context, id int64, status JobStatus, errMsg string) error
 	RecoverRunning(ctx context.Context) error // running -> pending on boot
+	AppendJobLog(ctx context.Context, jobID int64, stage, message string) error
 	ListJobs(ctx context.Context, limit int) ([]JobView, error)
 	GetJob(ctx context.Context, id int64) (*Job, error)
 

@@ -216,18 +216,26 @@ func (c *Console) handleEffectiveConfig(w http.ResponseWriter, r *http.Request) 
 
 // jobView is the JSON shape returned to the console, with PRRef flattened.
 type jobView struct {
-	ID         int64  `json:"id"`
-	Owner      string `json:"owner"`
-	Repo       string `json:"repo"`
-	Number     int    `json:"number"`
-	Event      string `json:"event"`
-	Action     string `json:"action"`
-	Status     string `json:"status"`
-	Attempts   int    `json:"attempts"`
-	Error      string `json:"error"`
-	CreatedAt  string `json:"created_at"`
-	FinishedAt string `json:"finished_at"`
-	SessionID  string `json:"session_id"`
+	ID         int64        `json:"id"`
+	Owner      string       `json:"owner"`
+	Repo       string       `json:"repo"`
+	Number     int          `json:"number"`
+	Event      string       `json:"event"`
+	Action     string       `json:"action"`
+	Status     string       `json:"status"`
+	Attempts   int          `json:"attempts"`
+	Error      string       `json:"error"`
+	CreatedAt  string       `json:"created_at"`
+	StartedAt  string       `json:"started_at"`
+	FinishedAt string       `json:"finished_at"`
+	SessionID  string       `json:"session_id"`
+	Logs       []jobLogView `json:"logs"`
+}
+
+type jobLogView struct {
+	Stage     string `json:"stage"`
+	Message   string `json:"message"`
+	CreatedAt string `json:"created_at"`
 }
 
 func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
@@ -253,8 +261,21 @@ func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
 		if !j.CreatedAt.IsZero() {
 			jv.CreatedAt = j.CreatedAt.Format(timeLayout)
 		}
+		if j.StartedAt != nil && !j.StartedAt.IsZero() {
+			jv.StartedAt = j.StartedAt.Format(timeLayout)
+		}
 		if j.FinishedAt != nil && !j.FinishedAt.IsZero() {
 			jv.FinishedAt = j.FinishedAt.Format(timeLayout)
+		}
+		if len(j.Logs) > 0 {
+			jv.Logs = make([]jobLogView, 0, len(j.Logs))
+			for _, l := range j.Logs {
+				lv := jobLogView{Stage: l.Stage, Message: l.Message}
+				if !l.CreatedAt.IsZero() {
+					lv.CreatedAt = l.CreatedAt.Format(timeLayout)
+				}
+				jv.Logs = append(jv.Logs, lv)
+			}
 		}
 		out = append(out, jv)
 	}

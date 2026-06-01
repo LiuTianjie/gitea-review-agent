@@ -138,6 +138,30 @@ func TestClaimAndFinishJob(t *testing.T) {
 	}
 }
 
+func TestClaimJobSkipsPendingSamePRWhenRunning(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	if _, _, err := st.EnqueueJob(ctx, sampleEvent("d-same-1")); err != nil {
+		t.Fatalf("enqueue 1: %v", err)
+	}
+	if _, _, err := st.EnqueueJob(ctx, sampleEvent("d-same-2")); err != nil {
+		t.Fatalf("enqueue 2: %v", err)
+	}
+
+	claimed, err := st.ClaimJob(ctx)
+	if err != nil || claimed == nil {
+		t.Fatalf("ClaimJob: %v / %v", claimed, err)
+	}
+	next, err := st.ClaimJob(ctx)
+	if err != nil {
+		t.Fatalf("ClaimJob next: %v", err)
+	}
+	if next != nil {
+		t.Fatalf("claimed same PR while first still running: %+v", next)
+	}
+}
+
 func TestRecoverRunning(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
@@ -215,6 +239,9 @@ func TestListJobs(t *testing.T) {
 	if _, _, err := st.EnqueueJob(ctx, ev); err != nil {
 		t.Fatalf("enqueue 2: %v", err)
 	}
+	if err := st.AppendJobLog(ctx, 2, "codex", "review started"); err != nil {
+		t.Fatalf("AppendJobLog: %v", err)
+	}
 
 	views, err := st.ListJobs(ctx, 10)
 	if err != nil {
@@ -229,6 +256,9 @@ func TestListJobs(t *testing.T) {
 	}
 	if views[0].PR.Owner != "acme" || views[0].PR.Repo != "widgets" {
 		t.Fatalf("ListJobs: repo join mismatch: %+v", views[0].PR)
+	}
+	if len(views[0].Logs) != 1 || views[0].Logs[0].Stage != "codex" || views[0].Logs[0].Message != "review started" {
+		t.Fatalf("ListJobs logs = %+v, want codex/review started", views[0].Logs)
 	}
 }
 

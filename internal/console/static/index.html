@@ -164,9 +164,9 @@
     <div style="overflow:auto; max-height: 420px; margin-top: 8px;">
       <table>
         <thead>
-          <tr><th>ID</th><th>PR</th><th>事件</th><th>动作</th><th>状态</th><th>次数</th><th>创建时间</th><th>会话</th><th>错误/日志</th></tr>
+          <tr><th>ID</th><th>PR</th><th>事件</th><th>动作</th><th>状态</th><th>次数</th><th>创建时间</th><th>开始时间</th><th>会话</th><th>错误/日志</th></tr>
         </thead>
-        <tbody id="jobsBody"><tr><td colspan="9" class="muted">加载中…</td></tr></tbody>
+        <tbody id="jobsBody"><tr><td colspan="10" class="muted">加载中…</td></tr></tbody>
       </table>
     </div>
   </section>
@@ -258,21 +258,30 @@
   function loadJobs(){
     fetch("/admin/api/jobs").then(function(r){ return r.json(); }).then(function(jobs){
       var body = $("jobsBody");
-      if (!jobs || !jobs.length) { body.innerHTML = '<tr><td colspan="9" class="muted">暂无任务</td></tr>'; }
+      if (!jobs || !jobs.length) { body.innerHTML = '<tr><td colspan="10" class="muted">暂无任务</td></tr>'; }
       else {
         body.innerHTML = jobs.map(function(j){
           var pr = esc(j.owner) + "/" + esc(j.repo) + "#" + esc(j.number);
           var st = esc(j.status);
           var created = j.created_at ? esc(j.created_at.replace("T"," ").replace("Z","")) : "";
+          var started = j.started_at ? esc(j.started_at.replace("T"," ").replace("Z","")) : "";
           var sess = j.session_id ? "<code>" + esc(j.session_id.slice(0,8)) + "</code>" : "";
-          var err = j.error ? "<pre class='log'>" + esc(j.error) + "</pre>" : "";
+          var logs = "";
+          if (j.logs && j.logs.length) {
+            logs = "<pre class='log'>" + j.logs.map(function(l){
+              var ts = l.created_at ? l.created_at.replace("T"," ").replace("Z","") + " " : "";
+              return esc(ts + "[" + (l.stage || "") + "] " + (l.message || ""));
+            }).join("\n") + "</pre>";
+          }
+          var err = j.error ? "<pre class='log'>[error] " + esc(j.error) + "</pre>" : "";
           return "<tr><td>" + esc(j.id) + "</td><td>" + pr + "</td><td>" + esc(j.event) +
                  "</td><td>" + esc(j.action) + "</td><td><span class='badge s-" + st + "'>" + st +
-                 "</span></td><td>" + esc(j.attempts) + "</td><td>" + created + "</td><td>" + sess + "</td><td>" + err + "</td></tr>";
+                 "</span></td><td>" + esc(j.attempts) + "</td><td>" + created + "</td><td>" + started +
+                 "</td><td>" + sess + "</td><td>" + logs + err + "</td></tr>";
         }).join("");
       }
       $("jobsMeta").textContent = " 更新于 " + new Date().toLocaleTimeString();
-    }).catch(function(e){ $("jobsBody").innerHTML = '<tr><td colspan="9" class="err">加载失败：' + esc(e) + '</td></tr>'; });
+    }).catch(function(e){ $("jobsBody").innerHTML = '<tr><td colspan="10" class="err">加载失败：' + esc(e) + '</td></tr>'; });
   }
 
   $("saveBtn").addEventListener("click", saveSettings);

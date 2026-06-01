@@ -90,8 +90,17 @@ func (s *Store) ClaimJob(ctx context.Context) (*model.Job, error) {
 
 	var id int64
 	err = tx.QueryRowContext(ctx,
-		`SELECT id FROM jobs WHERE status=? ORDER BY id LIMIT 1`,
-		string(model.JobPending)).Scan(&id)
+		`SELECT j.id
+		 FROM jobs j
+		 WHERE j.status=?
+		   AND NOT EXISTS (
+		     SELECT 1 FROM jobs r
+		     WHERE r.status=?
+		       AND r.repo_id=j.repo_id
+		       AND r.pr_number=j.pr_number
+		   )
+		 ORDER BY j.id LIMIT 1`,
+		string(model.JobPending), string(model.JobRunning)).Scan(&id)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -126,6 +135,17 @@ func (s *Store) FinishJob(ctx context.Context, id int64, status model.JobStatus,
 	return nil
 }
 
+// AppendJobLog adds a progress entry visible in the admin console.
+func (s *Store) AppendJobLog(ctx context.Context, jobID int64, stage, message string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO job_logs(job_id,stage,message,created_at) VALUES(?,?,?,?)`,
+		jobID, stage, message, nowRFC3339())
+	if err != nil {
+		return fmt.Errorf("append job log: %w", err)
+	}
+	return nil
+}
+
 // RecoverRunning resets all running jobs back to pending. Called on boot to
 // requeue work that was in flight when the process died.
 func (s *Store) RecoverRunning(ctx context.Context) error {
@@ -146,7 +166,7 @@ func (s *Store) ListJobs(ctx context.Context, limit int) ([]model.JobView, error
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT j.id, r.owner, r.name, j.pr_number, j.event, j.action,
-		        j.status, j.attempts, j.error, j.created_at, j.finished_at,
+		        j.status, j.attempts, j.error, j.created_at, j.started_at, j.finished_at,
 		        COALESCE(p.session_id,'')
 		 FROM jobs j
 		 LEFT JOIN repos r ON r.id = j.repo_id
@@ -167,11 +187,12 @@ func (s *Store) ListJobs(ctx context.Context, limit int) ([]model.JobView, error
 			status     string
 			errMsg     sql.NullString
 			createdAt  string
+			startedAt  sql.NullString
 			finishedAt sql.NullString
 			sessionID  string
 		)
 		if err := rows.Scan(&v.ID, &owner, &name, &v.PR.Number, &event, &v.Action,
-			&status, &v.Attempts, &errMsg, &createdAt, &finishedAt, &sessionID); err != nil {
+			&status, &v.Attempts, &errMsg, &createdAt, &startedAt, &finishedAt, &sessionID); err != nil {
 			return nil, fmt.Errorf("scan job view: %w", err)
 		}
 		v.PR.Owner = owner.String
@@ -180,12 +201,50 @@ func (s *Store) ListJobs(ctx context.Context, limit int) ([]model.JobView, error
 		v.Status = model.JobStatus(status)
 		v.Error = errMsg.String
 		v.CreatedAt = parseTime(createdAt)
+		v.StartedAt = nullableTime(startedAt)
 		v.FinishedAt = nullableTime(finishedAt)
 		v.SessionID = sessionID
 		out = append(out, v)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate job views: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close job rows: %w", err)
+	}
+	for i := range out {
+		logs, err := s.listJobLogs(ctx, out[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		out[i].Logs = logs
+	}
+	return out, nil
+}
+
+func (s *Store) listJobLogs(ctx context.Context, jobID int64) ([]model.JobLog, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, stage, message, created_at FROM job_logs WHERE job_id=? ORDER BY id`,
+		jobID)
+	if err != nil {
+		return nil, fmt.Errorf("list job logs: %w", err)
+	}
+	defer rows.Close()
+
+	var out []model.JobLog
+	for rows.Next() {
+		var (
+			l         model.JobLog
+			createdAt string
+		)
+		if err := rows.Scan(&l.ID, &l.Stage, &l.Message, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan job log: %w", err)
+		}
+		l.CreatedAt = parseTime(createdAt)
+		out = append(out, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate job logs: %w", err)
 	}
 	return out, nil
 }

@@ -30,25 +30,35 @@ func (o *Orchestrator) logf(format string, args ...any) {
 	}
 }
 
+func (o *Orchestrator) jobLog(ctx context.Context, jobID int64, stage, message string) {
+	if o.Store != nil {
+		if err := o.Store.AppendJobLog(ctx, jobID, stage, message); err != nil {
+			o.logf("job %d log %s: %v", jobID, stage, err)
+		}
+	}
+	o.logf("job %d [%s] %s", jobID, stage, message)
+}
+
 // Process decodes a job and dispatches by event type/action.
 func (o *Orchestrator) Process(ctx context.Context, job *model.Job) error {
 	var ev model.WebhookEvent
 	if err := json.Unmarshal(job.Payload, &ev); err != nil {
 		return fmt.Errorf("decode payload: %w", err)
 	}
+	o.jobLog(ctx, job.ID, "event", fmt.Sprintf("%s %s %s/%s#%d", ev.Event, ev.Action, ev.PR.Owner, ev.PR.Repo, ev.PR.Number))
 
 	if !o.allowed(ev.PR) {
-		o.logf("skip %s/%s#%d: repo not in allowlist", ev.PR.Owner, ev.PR.Repo, ev.PR.Number)
+		o.jobLog(ctx, job.ID, "skip", "repo not in allowlist")
 		return nil
 	}
 
 	switch ev.Event {
 	case model.EventPullRequest:
-		return o.handlePR(ctx, &ev)
+		return o.handlePR(ctx, job.ID, &ev)
 	case model.EventIssueComment:
-		return o.handleComment(ctx, &ev)
+		return o.handleComment(ctx, job.ID, &ev)
 	default:
-		o.logf("ignoring event type %q", ev.Event)
+		o.jobLog(ctx, job.ID, "skip", fmt.Sprintf("ignoring event type %q", ev.Event))
 		return nil
 	}
 }
@@ -66,28 +76,32 @@ func (o *Orchestrator) allowed(pr model.PRRef) bool {
 	return false
 }
 
-func (o *Orchestrator) handlePR(ctx context.Context, ev *model.WebhookEvent) error {
+func (o *Orchestrator) handlePR(ctx context.Context, jobID int64, ev *model.WebhookEvent) error {
 	switch ev.Action {
 	case "opened", "reopened":
-		return o.review(ctx, ev, false)
+		return o.review(ctx, jobID, ev, false)
 	case "synchronized":
-		return o.review(ctx, ev, true)
+		return o.review(ctx, jobID, ev, true)
 	case "closed":
+		o.jobLog(ctx, jobID, "cleanup", "PR closed; cleaning cached worktree")
 		if err := o.Cache.Cleanup(ev.PR); err != nil {
-			o.logf("cleanup on close %s#%d: %v", ev.PR.Repo, ev.PR.Number, err)
+			o.jobLog(ctx, jobID, "cleanup", "failed: "+err.Error())
+			return err
 		}
+		o.jobLog(ctx, jobID, "cleanup", "done")
 		return nil
 	default:
-		o.logf("ignoring PR action %q", ev.Action)
+		o.jobLog(ctx, jobID, "skip", fmt.Sprintf("ignoring PR action %q", ev.Action))
 		return nil
 	}
 }
 
 // review runs a full (new) or incremental (resume) review and posts it.
-func (o *Orchestrator) review(ctx context.Context, ev *model.WebhookEvent, isUpdate bool) error {
+func (o *Orchestrator) review(ctx context.Context, jobID int64, ev *model.WebhookEvent, isUpdate bool) error {
 	pr := ev.PR
 
 	// Prior state (session continuity).
+	o.jobLog(ctx, jobID, "state", "loading prior PR session")
 	prev, err := o.Store.GetPull(ctx, pr)
 	if err != nil {
 		return fmt.Errorf("get pull: %w", err)
@@ -101,6 +115,7 @@ func (o *Orchestrator) review(ctx context.Context, ev *model.WebhookEvent, isUpd
 		prevReviewID = prev.LastReviewID
 	}
 
+	o.jobLog(ctx, jobID, "git", "preparing worktree")
 	worktree, err := o.Cache.Prepare(ctx, pr, ev.CloneURL, ev.BaseRef, ev.HeadRef, ev.HeadSHA)
 	if err != nil {
 		return fmt.Errorf("git prepare: %w", err)
@@ -110,11 +125,14 @@ func (o *Orchestrator) review(ctx context.Context, ev *model.WebhookEvent, isUpd
 			o.logf("cleanup %s#%d: %v", pr.Repo, pr.Number, cerr)
 		}
 	}()
+	o.jobLog(ctx, jobID, "git", "worktree ready")
 
+	o.jobLog(ctx, jobID, "gitea", "fetching PR diff")
 	diff, err := o.Gitea.GetDiff(ctx, pr)
 	if err != nil {
 		return fmt.Errorf("get diff: %w", err)
 	}
+	o.jobLog(ctx, jobID, "gitea", "diff fetched")
 
 	in := model.CodexInput{
 		Worktree: worktree,
@@ -125,12 +143,15 @@ func (o *Orchestrator) review(ctx context.Context, ev *model.WebhookEvent, isUpd
 		in.Note = fmt.Sprintf("PR head 已从 %s 更新到 %s。请基于 %s 重新审查当前 diff，并在摘要中说明之前报告的问题哪些已经修复。", shortSHA(prevHead), shortSHA(ev.HeadSHA), ev.BaseRef)
 	}
 
+	o.jobLog(ctx, jobID, "codex", "review started")
 	result, err := o.Codex.Review(ctx, in)
 	if err != nil {
 		return fmt.Errorf("codex review: %w", err)
 	}
+	o.jobLog(ctx, jobID, "codex", fmt.Sprintf("review finished: %d findings, session=%s", len(result.Findings), result.SessionID))
 
 	// Persist PR state + session id.
+	o.jobLog(ctx, jobID, "state", "saving PR session")
 	st := &model.PullState{PR: pr, SessionID: result.SessionID, HeadSHA: ev.HeadSHA, BaseRef: ev.BaseRef}
 	if st.SessionID == "" {
 		st.SessionID = sessionID // keep prior if codex returned none
@@ -145,6 +166,7 @@ func (o *Orchestrator) review(ctx context.Context, ev *model.WebhookEvent, isUpd
 
 	// Dismiss our previous review so stale comments don't pile up.
 	if isUpdate && prevReviewID != 0 {
+		o.jobLog(ctx, jobID, "gitea", "dismissing previous review")
 		if err := o.Gitea.DismissReview(ctx, pr, prevReviewID, "新提交触发了重新审查，此前审查已被替代。"); err != nil {
 			o.logf("dismiss prior review %d: %v", prevReviewID, err)
 		}
@@ -156,10 +178,12 @@ func (o *Orchestrator) review(ctx context.Context, ev *model.WebhookEvent, isUpd
 		event = model.ReviewEventRequestChanges
 	}
 
+	o.jobLog(ctx, jobID, "gitea", fmt.Sprintf("posting review: %d inline comments, verdict=%s", len(comments), event))
 	reviewID, err := o.Gitea.PostReview(ctx, pr, ev.HeadSHA, event, body, comments)
 	if err != nil {
 		return fmt.Errorf("post review: %w", err)
 	}
+	o.jobLog(ctx, jobID, "gitea", fmt.Sprintf("review posted: id=%d", reviewID))
 
 	if pullRow != nil {
 		if err := o.Store.SaveFindings(ctx, pullRow.ID, ev.HeadSHA, result.Findings); err != nil {
@@ -176,34 +200,43 @@ func (o *Orchestrator) review(ctx context.Context, ev *model.WebhookEvent, isUpd
 }
 
 // handleComment answers a bot-directed question on a PR by resuming its session.
-func (o *Orchestrator) handleComment(ctx context.Context, ev *model.WebhookEvent) error {
+func (o *Orchestrator) handleComment(ctx context.Context, jobID int64, ev *model.WebhookEvent) error {
 	if !ev.IsPR || ev.Action != "created" {
+		o.jobLog(ctx, jobID, "skip", "comment is not a new PR comment")
 		return nil
 	}
 	question, ok := o.matchTrigger(ev.CommentBody)
 	if !ok {
+		o.jobLog(ctx, jobID, "skip", "comment does not match trigger keywords")
 		return nil
 	}
 
+	o.jobLog(ctx, jobID, "state", "loading prior PR session")
 	prev, err := o.Store.GetPull(ctx, ev.PR)
 	if err != nil {
 		return fmt.Errorf("get pull: %w", err)
 	}
 	if prev == nil || prev.SessionID == "" {
+		o.jobLog(ctx, jobID, "gitea", "posting missing-session comment")
 		_, perr := o.Gitea.PostComment(ctx, ev.PR, "我还没有审查过这个 PR，因此没有可继续的会话。请先推送一次提交或重新打开 PR 来触发审查。")
 		return perr
 	}
 
+	o.jobLog(ctx, jobID, "git", "preparing worktree")
 	worktree, err := o.Cache.Prepare(ctx, ev.PR, ev.CloneURL, prev.BaseRef, ev.HeadRef, prev.HeadSHA)
 	if err != nil {
 		return fmt.Errorf("git prepare: %w", err)
 	}
 	defer o.Cache.Cleanup(ev.PR)
+	o.jobLog(ctx, jobID, "git", "worktree ready")
 
+	o.jobLog(ctx, jobID, "codex", "answer started")
 	answer, err := o.Codex.Ask(ctx, prev.SessionID, worktree, question)
 	if err != nil {
 		return fmt.Errorf("codex ask: %w", err)
 	}
+	o.jobLog(ctx, jobID, "codex", "answer finished")
+	o.jobLog(ctx, jobID, "gitea", "posting answer comment")
 	_, err = o.Gitea.PostComment(ctx, ev.PR, answer)
 	return err
 }

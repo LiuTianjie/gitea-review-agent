@@ -11,6 +11,10 @@ CREATE TABLE IF NOT EXISTS jobs(
   status TEXT, attempts INTEGER DEFAULT 0, error TEXT,
   created_at TEXT, started_at TEXT, finished_at TEXT);
 CREATE INDEX IF NOT EXISTS jobs_claim ON jobs(status, repo_id);
+CREATE TABLE IF NOT EXISTS job_logs(
+  id INTEGER PRIMARY KEY, job_id INTEGER REFERENCES jobs(id) ON DELETE CASCADE,
+  stage TEXT, message TEXT, created_at TEXT);
+CREATE INDEX IF NOT EXISTS job_logs_job ON job_logs(job_id, id);
 CREATE TABLE IF NOT EXISTS findings(
   id INTEGER PRIMARY KEY, pull_id INTEGER REFERENCES pulls(id),
   fingerprint TEXT, path TEXT, line INTEGER, side TEXT, severity TEXT,
