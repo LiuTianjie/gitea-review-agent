@@ -39,7 +39,7 @@ func newTestConsole(t *testing.T, statusFn StatusFunc) (*Console, string) {
 }
 
 // do issues a request against the console's full handler tree, optionally with
-// Basic Auth credentials.
+// a logged-in console session.
 func do(t *testing.T, h http.Handler, method, path, body string, withAuth bool) *httptest.ResponseRecorder {
 	t.Helper()
 	var r *http.Request
@@ -49,23 +49,74 @@ func do(t *testing.T, h http.Handler, method, path, body string, withAuth bool) 
 		r = httptest.NewRequest(method, path, nil)
 	}
 	if withAuth {
-		r.SetBasicAuth("admin", testPassword)
+		c := loginCookie(t, h)
+		r.AddCookie(c)
 	}
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	return w
 }
 
-func TestNoAuthRejected(t *testing.T) {
+func loginCookie(t *testing.T, h http.Handler) *http.Cookie {
+	t.Helper()
+	r := httptest.NewRequest("POST", "/admin/login", strings.NewReader("password="+testPassword))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("login: status=%d body=%s", w.Code, w.Body.String())
+	}
+	for _, c := range w.Result().Cookies() {
+		if c.Name == consoleSessionCookie {
+			return c
+		}
+	}
+	t.Fatalf("login did not set %s cookie", consoleSessionCookie)
+	return nil
+}
+
+func TestNoAuthRedirectsToLogin(t *testing.T) {
+	c, _ := newTestConsole(t, nil)
+	h := c.Routes()
+
+	w := do(t, h, "GET", "/admin/", "", false)
+	if w.Code != http.StatusSeeOther {
+		t.Errorf("no auth page: status = %d, want 303", w.Code)
+	}
+	if loc := w.Header().Get("Location"); loc != "/admin/login" {
+		t.Errorf("no auth redirect = %q, want /admin/login", loc)
+	}
+}
+
+func TestNoAuthAPIRejectedWithoutBasicChallenge(t *testing.T) {
 	c, _ := newTestConsole(t, nil)
 	h := c.Routes()
 
 	w := do(t, h, "GET", "/admin/api/settings", "", false)
 	if w.Code != http.StatusUnauthorized {
-		t.Errorf("no auth: status = %d, want 401", w.Code)
+		t.Errorf("no auth api: status = %d, want 401", w.Code)
 	}
-	if !strings.Contains(w.Header().Get("WWW-Authenticate"), "Basic") {
-		t.Errorf("missing WWW-Authenticate header: %q", w.Header().Get("WWW-Authenticate"))
+	if got := w.Header().Get("WWW-Authenticate"); got != "" {
+		t.Errorf("unexpected Basic Auth challenge: %q", got)
+	}
+	if !strings.Contains(w.Body.String(), "unauthorized") {
+		t.Errorf("api unauthorized body = %q", w.Body.String())
+	}
+}
+
+func TestLoginPageServed(t *testing.T) {
+	c, _ := newTestConsole(t, nil)
+	h := c.Routes()
+
+	w := do(t, h, "GET", "/admin/login", "", false)
+	if w.Code != http.StatusOK {
+		t.Fatalf("login page: status = %d, want 200", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "登录控制台") {
+		t.Errorf("login page missing styled form")
+	}
+	if strings.Contains(w.Body.String(), "WWW-Authenticate") {
+		t.Errorf("login page should not include Basic Auth marker")
 	}
 }
 
@@ -73,12 +124,30 @@ func TestWrongPasswordRejected(t *testing.T) {
 	c, _ := newTestConsole(t, nil)
 	h := c.Routes()
 
-	r := httptest.NewRequest("GET", "/admin/api/settings", nil)
-	r.SetBasicAuth("admin", "wrong")
+	r := httptest.NewRequest("POST", "/admin/login", strings.NewReader("password=wrong"))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("wrong password: status = %d, want 401", w.Code)
+	}
+	for _, c := range w.Result().Cookies() {
+		if c.Name == consoleSessionCookie && c.Value != "" {
+			t.Fatalf("wrong password set session cookie: %+v", c)
+		}
+	}
+	if !strings.Contains(w.Body.String(), "密码不正确") {
+		t.Errorf("wrong password body missing message")
+	}
+}
+
+func TestLoginThenGetSettings(t *testing.T) {
+	c, _ := newTestConsole(t, nil)
+	h := c.Routes()
+
+	w := do(t, h, "GET", "/admin/api/settings", "", true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("authorized by login cookie: status = %d, want 200", w.Code)
 	}
 }
 
@@ -91,7 +160,7 @@ func TestConsoleDisabledWhenNoPassword(t *testing.T) {
 	cfg := &config.Config{AdminPassword: ""} // disabled
 	c := New(st, cfg, t.TempDir())
 
-	w := do(t, c.Routes(), "GET", "/admin/api/settings", "", true)
+	w := do(t, c.Routes(), "GET", "/admin/api/settings", "", false)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("disabled console: status = %d, want 503", w.Code)
 	}

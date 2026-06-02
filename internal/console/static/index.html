@@ -5,66 +5,359 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>codex-gitea 控制台</title>
 <style>
-  :root { color-scheme: light dark; }
+  :root {
+    color-scheme: light;
+    --bg: #f7f7f5;
+    --panel: #ffffff;
+    --panel-subtle: #fbfbfa;
+    --text: #171717;
+    --muted: #737373;
+    --faint: #a3a3a3;
+    --line: #e5e5e3;
+    --line-strong: #d4d4d0;
+    --black: #101010;
+    --black-hover: #262626;
+    --green: #0f7a3f;
+    --green-bg: #e9f8ef;
+    --red: #b42318;
+    --red-bg: #fff0ee;
+    --blue: #1d4ed8;
+    --blue-bg: #edf4ff;
+    --yellow: #8a5a00;
+    --yellow-bg: #fff8df;
+    --gray-bg: #eeeeec;
+    --shadow: 0 1px 2px rgba(16, 16, 16, .04), 0 12px 40px rgba(16, 16, 16, .04);
+  }
   * { box-sizing: border-box; }
+  html { background: var(--bg); }
   body {
-    font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, sans-serif;
-    margin: 0; padding: 0; line-height: 1.5;
-    background: #f6f7f9; color: #1c1e21;
+    margin: 0;
+    color: var(--text);
+    background:
+      linear-gradient(rgba(229,229,227,.54) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(229,229,227,.54) 1px, transparent 1px),
+      var(--bg);
+    background-size: 42px 42px;
+    font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.5;
+    letter-spacing: 0;
   }
-  @media (prefers-color-scheme: dark) {
-    body { background: #16181c; color: #e6e8eb; }
-    section { background: #1f2329 !important; border-color: #30353c !important; }
-    input, select { background: #16181c; color: #e6e8eb; border-color: #30353c; }
-    th { background: #262b32 !important; }
-    tr:nth-child(even) td { background: #1b1f24; }
-    .muted { color: #8b9096 !important; }
+  header {
+    border-bottom: 1px solid var(--line);
+    background: rgba(255,255,255,.84);
+    backdrop-filter: blur(14px);
+    position: sticky;
+    top: 0;
+    z-index: 10;
   }
-  header { padding: 16px 24px; border-bottom: 1px solid #d8dbdf; }
-  header h1 { margin: 0; font-size: 18px; }
-  main { max-width: 900px; margin: 0 auto; padding: 16px 24px 64px; }
+  .topbar {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .mark {
+    width: 32px; height: 32px; border-radius: 8px;
+    display: grid; place-items: center;
+    background: var(--black); color: #fff;
+    font-weight: 750; font-size: 15px;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.12);
+  }
+  header h1 { margin: 0; font-size: 15px; line-height: 1.2; font-weight: 700; letter-spacing: 0; }
+  .subtitle { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+  .top-actions { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .top-actions a { color: var(--text); text-decoration: none; border-left: 1px solid var(--line); padding-left: 10px; }
+  .top-actions a:hover { text-decoration: underline; }
+  .live-dot {
+    width: 8px; height: 8px; border-radius: 999px; background: #22c55e;
+    box-shadow: 0 0 0 4px rgba(34,197,94,.12);
+  }
+  main { max-width: 1180px; margin: 0 auto; padding: 22px 24px 64px; }
+  .intro {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 20px;
+    padding: 20px 0 18px;
+  }
+  .intro h2 { margin: 0; font-size: 30px; line-height: 1.08; letter-spacing: 0; }
+  .intro p { margin: 8px 0 0; max-width: 620px; color: var(--muted); font-size: 14px; }
+  .quick-meta {
+    display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;
+    color: var(--muted); font-size: 12px;
+  }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    min-height: 28px; padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: rgba(255,255,255,.72);
+  }
+  .tabs {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: rgba(255,255,255,.72);
+    margin: 0 0 14px;
+  }
+  .tab-btn {
+    margin: 0;
+    min-height: 32px;
+    border-color: transparent;
+    background: transparent;
+    color: var(--muted);
+    box-shadow: none;
+  }
+  .tab-btn:hover { transform: none; border-color: var(--line); background: #fff; color: var(--text); }
+  .tab-btn.active { background: var(--black); border-color: var(--black); color: #fff; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
   section {
-    background: #fff; border: 1px solid #e1e4e8; border-radius: 8px;
-    padding: 16px 20px; margin: 16px 0;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 20px;
+    margin: 14px 0;
+    box-shadow: var(--shadow);
   }
-  section h2 { margin-top: 0; font-size: 15px; letter-spacing: .02em; }
-  label { display: block; margin: 10px 0 2px; font-size: 13px; font-weight: 600; }
-  input, select { width: 100%; padding: 8px 10px; border: 1px solid #ccd0d5; border-radius: 6px; font-size: 14px; }
+  section h2 { margin: 0 0 14px; font-size: 13px; letter-spacing: 0; font-weight: 720; }
+  label { display: block; margin: 12px 0 6px; font-size: 12px; color: var(--muted); font-weight: 640; }
+  input, select {
+    width: 100%;
+    min-height: 38px;
+    padding: 8px 10px;
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+    background: #fff;
+    color: var(--text);
+    font-size: 13px;
+    outline: none;
+    transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+  }
+  input:focus, select:focus { border-color: var(--black); box-shadow: 0 0 0 3px rgba(16,16,16,.08); }
+  input::placeholder { color: var(--faint); }
   button {
-    margin-top: 12px; padding: 8px 16px; border: 0; border-radius: 6px;
-    background: #2563eb; color: #fff; font-size: 14px; cursor: pointer;
+    min-height: 36px;
+    margin-top: 14px;
+    padding: 0 14px;
+    border: 1px solid var(--black);
+    border-radius: 8px;
+    background: var(--black);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 650;
+    cursor: pointer;
+    transition: transform .16s ease, background .16s ease, border-color .16s ease;
   }
-  button:hover { background: #1d4ed8; }
-  button.secondary { background: #6b7280; }
-  button.secondary:hover { background: #4b5563; }
-  .row { display: flex; gap: 16px; flex-wrap: wrap; }
-  .row > div { flex: 1 1 200px; }
-  .msg { margin-top: 10px; font-size: 13px; min-height: 18px; }
-  .ok { color: #15803d; }
-  .err { color: #b91c1c; }
-  .muted { color: #6b7280; font-size: 12px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e1e4e8; }
-  th { background: #f0f2f5; position: sticky; top: 0; }
-  .badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
-  .s-done { background: #dcfce7; color: #166534; }
-  .s-failed { background: #fee2e2; color: #991b1b; }
-  .s-running { background: #dbeafe; color: #1e40af; }
-  .s-pending { background: #fef9c3; color: #854d0e; }
-  .s-superseded { background: #e5e7eb; color: #374151; }
-  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  button:hover { background: var(--black-hover); border-color: var(--black-hover); transform: translateY(-1px); }
+  button.secondary { background: #fff; color: var(--text); border-color: var(--line-strong); }
+  button.secondary:hover { background: var(--panel-subtle); border-color: var(--black); }
+  button.detailBtn {
+    min-height: 28px;
+    margin: 0;
+    padding: 0 9px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; }
+  .msg {
+    margin-top: 12px;
+    min-height: 20px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .ok { color: var(--green); }
+  .err { color: var(--red); }
+  .muted { color: var(--muted); font-size: 12px; }
+  table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th {
+    background: var(--panel-subtle);
+    color: var(--muted);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  tbody tr { background: #fff; }
+  tbody tr:hover td { background: #fafafa; }
+  tr.job-row { cursor: pointer; }
+  tr.job-row.selected td { background: #f6f6f4; }
+  .table-wrap {
+    overflow: auto;
+    max-height: 460px;
+    margin-top: 10px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #fff;
+  }
+  .badge {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-height: 22px; padding: 0 8px;
+    border-radius: 999px;
+    font-size: 11px; font-weight: 720;
+    border: 1px solid transparent;
+  }
+  .s-done { background: var(--green-bg); color: var(--green); border-color: #c8ecd4; }
+  .s-failed { background: var(--red-bg); color: var(--red); border-color: #ffd5cf; }
+  .s-running { background: var(--blue-bg); color: var(--blue); border-color: #cfe1ff; }
+  .s-pending { background: var(--yellow-bg); color: var(--yellow); border-color: #f3df9c; }
+  .s-superseded { background: var(--gray-bg); color: #525252; border-color: var(--line-strong); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
   pre.log {
-    margin: 6px 0 10px; padding: 10px; border: 1px solid #e5e7eb; border-radius: 6px;
-    background: #f9fafb; color: #7f1d1d; white-space: pre-wrap; word-break: break-word;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+    margin: 0 0 8px;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fafafa;
+    color: #525252;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.55;
   }
-  .compact { font-size: 12px; color: #4b5563; }
+  .compact {
+    margin-top: 10px;
+    padding: 14px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel-subtle);
+    color: #525252;
+    font-size: 12px;
+  }
+  .compact p { margin: 7px 0; }
+  .jobs-layout {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+  .job-detail {
+    min-height: 360px;
+    padding: 20px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel-subtle);
+  }
+  .job-detail h2 { margin: 18px 0 10px; font-size: 13px; color: var(--muted); font-weight: 720; }
+  .detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+  .detail-title { margin: 0; font-size: 18px; line-height: 1.2; }
+  .detail-subtitle { margin: 5px 0 0; color: var(--muted); font-size: 13px; }
+  .detail-grid {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 10px;
+    margin: 14px 0;
+  }
+  .metric {
+    padding: 11px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+  }
+  .metric span { display: block; color: var(--muted); font-size: 11px; }
+  .metric strong { display: block; margin-top: 4px; font-size: 13px; font-weight: 700; word-break: break-word; }
+  .timeline { display: grid; gap: 10px; margin-top: 10px; }
+  .log-item {
+    display: grid;
+    grid-template-columns: 150px minmax(0, 1fr);
+    gap: 12px;
+    padding: 13px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+  }
+  .log-stage { color: var(--muted); font-size: 12px; font-weight: 700; word-break: break-word; }
+  .log-message { color: #303030; font-size: 14px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+  .empty-state {
+    min-height: 210px;
+    display: grid;
+    place-items: center;
+    padding: 20px;
+    color: var(--muted);
+    text-align: center;
+    border: 1px dashed var(--line-strong);
+    border-radius: 10px;
+    background: rgba(255,255,255,.62);
+  }
+  @media (max-width: 760px) {
+    .topbar { align-items: flex-start; padding: 12px 16px; }
+    .top-actions { display: none; }
+    main { padding: 16px 14px 44px; }
+    .intro { grid-template-columns: 1fr; align-items: start; }
+    .intro h2 { font-size: 24px; }
+    .quick-meta { justify-content: flex-start; }
+    section { padding: 16px; border-radius: 8px; }
+    .row { grid-template-columns: 1fr; }
+    th, td { padding: 9px 10px; }
+    .tabs { display: flex; width: 100%; }
+    .tab-btn { flex: 1; }
+    .detail-grid { grid-template-columns: 1fr; }
+    .log-item { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
-<header><h1>codex-gitea 控制台</h1></header>
+<header>
+  <div class="topbar">
+    <div class="brand">
+      <div class="mark">cg</div>
+      <div>
+        <h1>codex-gitea</h1>
+        <p class="subtitle">Review automation console</p>
+      </div>
+    </div>
+    <div class="top-actions"><span class="live-dot"></span><span>admin console</span><a href="/admin/logout">退出</a></div>
+  </div>
+</header>
 <main>
+  <div class="intro">
+    <div>
+      <h2>控制台</h2>
+      <p>管理 Gitea webhook、Codex 鉴权、运行配置和近期 review 任务。</p>
+    </div>
+    <div class="quick-meta">
+      <span class="chip">webhook</span>
+      <span class="chip">codex</span>
+      <span class="chip">jobs</span>
+    </div>
+  </div>
 
+  <nav class="tabs" aria-label="控制台视图">
+    <button class="tab-btn active" data-tab="jobs" type="button">任务</button>
+    <button class="tab-btn" data-tab="config" type="button">配置</button>
+  </nav>
+
+  <div id="tab-jobs" class="tab-panel active">
+  <section>
+    <h2>近期任务</h2>
+    <button class="secondary" id="jobsBtn">立即刷新</button>
+    <span class="muted" id="jobsMeta"></span>
+    <div class="jobs-layout">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>ID</th><th>PR</th><th>事件</th><th>动作</th><th>状态</th><th>次数</th><th>创建时间</th><th>开始时间</th><th>会话</th><th>日志</th></tr>
+          </thead>
+          <tbody id="jobsBody"><tr><td colspan="10" class="muted">加载中…</td></tr></tbody>
+        </table>
+      </div>
+      <aside class="job-detail" id="jobDetail">
+        <div class="empty-state">选择一个任务查看日志详情</div>
+      </aside>
+    </div>
+  </section>
+  </div>
+
+  <div id="tab-config" class="tab-panel">
   <section>
     <h2>Gitea 与审查设置</h2>
     <div class="row">
@@ -156,20 +449,7 @@
     <button id="statusBtn">检查状态</button>
     <div class="msg" id="statusMsg"></div>
   </section>
-
-  <section>
-    <h2>近期任务</h2>
-    <button class="secondary" id="jobsBtn">立即刷新</button>
-    <span class="muted" id="jobsMeta"></span>
-    <div style="overflow:auto; max-height: 420px; margin-top: 8px;">
-      <table>
-        <thead>
-          <tr><th>ID</th><th>PR</th><th>事件</th><th>动作</th><th>状态</th><th>次数</th><th>创建时间</th><th>开始时间</th><th>会话</th><th>错误/日志</th></tr>
-        </thead>
-        <tbody id="jobsBody"><tr><td colspan="10" class="muted">加载中…</td></tr></tbody>
-      </table>
-    </div>
-  </section>
+  </div>
 
 </main>
 <script>
@@ -181,9 +461,28 @@
                 "repo_allowlist","timeout"];
   var SECRETS = {gitea_token:1, webhook_secret:1, codex_api_key:1};
   var REDACTED = "***set***";
+  var jobCache = [];
+  var selectedJobID = null;
 
   function $(id){ return document.getElementById(id); }
   function show(el, text, ok){ el.textContent = text; el.className = "msg " + (ok ? "ok" : "err"); }
+  function prettyTime(v){ return v ? String(v).replace("T"," ").replace("Z","") : ""; }
+  function findJob(id){
+    for (var i = 0; i < jobCache.length; i++) {
+      if (String(jobCache[i].id) === String(id)) return jobCache[i];
+    }
+    return null;
+  }
+
+  function switchTab(name){
+    document.querySelectorAll(".tab-btn").forEach(function(btn){
+      btn.classList.toggle("active", btn.getAttribute("data-tab") === name);
+    });
+    document.querySelectorAll(".tab-panel").forEach(function(panel){
+      panel.classList.toggle("active", panel.id === "tab-" + name);
+    });
+    if (name === "jobs") loadJobs();
+  }
 
   function loadSettings(){
     fetch("/admin/api/settings").then(function(r){ return r.json(); }).then(function(s){
@@ -257,32 +556,79 @@
 
   function loadJobs(){
     fetch("/admin/api/jobs").then(function(r){ return r.json(); }).then(function(jobs){
-      var body = $("jobsBody");
-      if (!jobs || !jobs.length) { body.innerHTML = '<tr><td colspan="10" class="muted">暂无任务</td></tr>'; }
-      else {
-        body.innerHTML = jobs.map(function(j){
-          var pr = esc(j.owner) + "/" + esc(j.repo) + "#" + esc(j.number);
-          var st = esc(j.status);
-          var created = j.created_at ? esc(j.created_at.replace("T"," ").replace("Z","")) : "";
-          var started = j.started_at ? esc(j.started_at.replace("T"," ").replace("Z","")) : "";
-          var sess = j.session_id ? "<code>" + esc(j.session_id.slice(0,8)) + "</code>" : "";
-          var logs = "";
-          if (j.logs && j.logs.length) {
-            logs = "<pre class='log'>" + j.logs.map(function(l){
-              var ts = l.created_at ? l.created_at.replace("T"," ").replace("Z","") + " " : "";
-              return esc(ts + "[" + (l.stage || "") + "] " + (l.message || ""));
-            }).join("\n") + "</pre>";
-          }
-          var err = j.error ? "<pre class='log'>[error] " + esc(j.error) + "</pre>" : "";
-          return "<tr><td>" + esc(j.id) + "</td><td>" + pr + "</td><td>" + esc(j.event) +
-                 "</td><td>" + esc(j.action) + "</td><td><span class='badge s-" + st + "'>" + st +
-                 "</span></td><td>" + esc(j.attempts) + "</td><td>" + created + "</td><td>" + started +
-                 "</td><td>" + sess + "</td><td>" + logs + err + "</td></tr>";
-        }).join("");
-      }
+      jobCache = jobs || [];
+      renderJobs();
+      if (selectedJobID && findJob(selectedJobID)) renderJobDetail(findJob(selectedJobID));
+      else if (jobCache.length) { selectedJobID = jobCache[0].id; renderJobs(); renderJobDetail(jobCache[0]); }
+      else renderEmptyJobDetail();
       $("jobsMeta").textContent = " 更新于 " + new Date().toLocaleTimeString();
     }).catch(function(e){ $("jobsBody").innerHTML = '<tr><td colspan="10" class="err">加载失败：' + esc(e) + '</td></tr>'; });
   }
+
+  function renderJobs(){
+    var body = $("jobsBody");
+    if (!jobCache.length) {
+      body.innerHTML = '<tr><td colspan="10" class="muted">暂无任务</td></tr>';
+      return;
+    }
+    body.innerHTML = jobCache.map(function(j){
+      var pr = esc(j.owner) + "/" + esc(j.repo) + "#" + esc(j.number);
+      var st = esc(j.status);
+      var created = prettyTime(j.created_at);
+      var started = prettyTime(j.started_at);
+      var sess = j.session_id ? "<code>" + esc(j.session_id.slice(0,8)) + "</code>" : "";
+      var logCount = (j.logs && j.logs.length) ? j.logs.length : 0;
+      var err = j.error ? " + error" : "";
+      var selected = String(j.id) === String(selectedJobID) ? " selected" : "";
+      return "<tr class='job-row" + selected + "' data-job-id='" + esc(j.id) + "'><td>" + esc(j.id) +
+             "</td><td>" + pr + "</td><td>" + esc(j.event) +
+             "</td><td>" + esc(j.action) + "</td><td><span class='badge s-" + st + "'>" + st +
+             "</span></td><td>" + esc(j.attempts) + "</td><td>" + esc(created) + "</td><td>" + esc(started) +
+             "</td><td>" + sess + "</td><td><button class='secondary detailBtn' type='button' data-job-id='" + esc(j.id) + "'>" +
+             esc(logCount + " logs" + err) + "</button></td></tr>";
+    }).join("");
+  }
+
+  function renderEmptyJobDetail(){
+    $("jobDetail").innerHTML = '<div class="empty-state">选择一个任务查看日志详情</div>';
+  }
+
+  function renderJobDetail(j){
+    if (!j) { renderEmptyJobDetail(); return; }
+    var st = esc(j.status);
+    var pr = esc(j.owner) + "/" + esc(j.repo) + "#" + esc(j.number);
+    var logs = [];
+    if (j.error) logs.push({stage: "error", message: j.error, created_at: j.finished_at || j.started_at || j.created_at});
+    (j.logs || []).forEach(function(l){ logs.push(l); });
+    var timeline = logs.length ? logs.map(function(l){
+      var ts = prettyTime(l.created_at);
+      return "<div class='log-item'><div class='log-stage'>" + esc(l.stage || "log") +
+             (ts ? "<br><span class='muted'>" + esc(ts) + "</span>" : "") +
+             "</div><div class='log-message'>" + esc(l.message || "") + "</div></div>";
+    }).join("") : "<div class='empty-state'>这个任务还没有日志</div>";
+    $("jobDetail").innerHTML =
+      "<div class='detail-head'><div><h3 class='detail-title'>任务 #" + esc(j.id) + "</h3>" +
+      "<p class='detail-subtitle'>" + pr + "</p></div><span class='badge s-" + st + "'>" + st + "</span></div>" +
+      "<div class='detail-grid'>" +
+      "<div class='metric'><span>事件</span><strong>" + esc(j.event || "-") + "</strong></div>" +
+      "<div class='metric'><span>动作</span><strong>" + esc(j.action || "-") + "</strong></div>" +
+      "<div class='metric'><span>次数</span><strong>" + esc(j.attempts) + "</strong></div>" +
+      "<div class='metric'><span>会话</span><strong>" + (j.session_id ? esc(j.session_id) : "-") + "</strong></div>" +
+      "<div class='metric'><span>创建</span><strong>" + esc(prettyTime(j.created_at) || "-") + "</strong></div>" +
+      "<div class='metric'><span>开始</span><strong>" + esc(prettyTime(j.started_at) || "-") + "</strong></div>" +
+      "</div><h2>日志详情</h2><div class='timeline'>" + timeline + "</div>";
+  }
+
+  document.addEventListener("click", function(e){
+    var tab = e.target.closest(".tab-btn");
+    if (tab) { switchTab(tab.getAttribute("data-tab")); return; }
+    var row = e.target.closest(".job-row");
+    if (row) {
+      selectedJobID = row.getAttribute("data-job-id");
+      renderJobs();
+      renderJobDetail(findJob(selectedJobID));
+    }
+  });
 
   $("saveBtn").addEventListener("click", saveSettings);
   $("reloadBtn").addEventListener("click", loadSettings);

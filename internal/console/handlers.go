@@ -58,7 +58,7 @@ func (c *Console) Routes() http.Handler {
 	if c.cfg != nil {
 		password = c.cfg.AdminPassword
 	}
-	return basicAuthMiddleware(password, mux)
+	return consoleAuthMiddleware(password, mux)
 }
 
 // ---------- handlers ----------
