@@ -153,15 +153,16 @@ func (r *Runner) Review(ctx context.Context, in model.CodexInput) (*model.Review
 	defer os.Remove(outPath)
 
 	var args []string
+	var prompt string
 	if in.SessionID == "" {
-		prompt := buildReviewPrompt(in.BaseRef, in.Note)
-		args = append([]string{"exec", prompt}, r.reviewBaseArgs(schemaPath, outPath)...)
+		prompt = buildReviewPrompt(in.BaseRef, in.Note)
+		args = append([]string{"exec", "-"}, r.reviewBaseArgs(schemaPath, outPath)...)
 	} else {
-		prompt := buildResumePrompt(in.BaseRef, in.Note)
-		args = append([]string{"exec", "resume", in.SessionID, prompt}, r.reviewBaseArgs(schemaPath, outPath)...)
+		prompt = buildResumePrompt(in.BaseRef, in.Note)
+		args = append([]string{"exec", "resume", in.SessionID, "-"}, r.reviewBaseArgs(schemaPath, outPath)...)
 	}
 
-	stream, err := r.run(ctx, in.Worktree, args)
+	stream, err := r.run(ctx, in.Worktree, args, prompt)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +201,7 @@ func (r *Runner) Ask(ctx context.Context, sessionID, worktree, question string) 
 	}
 	prompt := buildAskPrompt(question)
 	args := []string{
-		"exec", "resume", sessionID, prompt,
+		"exec", "resume", sessionID, "-",
 		"--json",
 		"-c", "approval_policy=never",
 		"-c", "sandbox_mode=" + r.sandbox,
@@ -210,7 +211,7 @@ func (r *Runner) Ask(ctx context.Context, sessionID, worktree, question string) 
 		args = append(args, "--model", r.model)
 	}
 
-	stream, err := r.run(ctx, worktree, args)
+	stream, err := r.run(ctx, worktree, args, prompt)
 	if err != nil {
 		return "", err
 	}
@@ -244,7 +245,7 @@ func (r *Runner) Status(ctx context.Context) (string, error) {
 
 // run executes codex in dir, returns captured stdout, and surfaces stderr on
 // failure. ctx is bounded by the runner timeout.
-func (r *Runner) run(ctx context.Context, dir string, args []string) ([]byte, error) {
+func (r *Runner) run(ctx context.Context, dir string, args []string, stdin string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
@@ -254,6 +255,9 @@ func (r *Runner) run(ctx context.Context, dir string, args []string) ([]byte, er
 	cmd.Env = r.env()
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 
 	// Run codex in its own process group so a timeout kills the whole tree.
 	// codex spawns children (git, etc.); killing only the direct child leaves
@@ -273,25 +277,28 @@ func (r *Runner) run(ctx context.Context, dir string, args []string) ([]byte, er
 		if ctxErr := ctx.Err(); ctxErr == context.DeadlineExceeded {
 			return nil, fmt.Errorf("codex timed out after %s: %w", r.timeout, ctxErr)
 		}
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = strings.TrimSpace(stdout.String())
-		}
+		msg := formatCommandFailure(stderr.String(), stdout.String())
 		if msg != "" {
-			return nil, fmt.Errorf("codex exec failed: %w: %s", err, lastLines(msg, 20))
+			return nil, fmt.Errorf("codex exec failed: %w: %s", err, msg)
 		}
 		return nil, fmt.Errorf("codex exec failed: %w", err)
 	}
 	return stdout.Bytes(), nil
 }
 
-// lastLines returns at most n trailing lines of s, to keep error messages short.
-func lastLines(s string, n int) string {
-	lines := strings.Split(s, "\n")
-	if len(lines) <= n {
-		return s
+func formatCommandFailure(stderr, stdout string) string {
+	stderr = strings.TrimSpace(stderr)
+	stdout = strings.TrimSpace(stdout)
+	switch {
+	case stderr != "" && stdout != "":
+		return "stderr:\n" + stderr + "\n\nstdout:\n" + stdout
+	case stderr != "":
+		return stderr
+	case stdout != "":
+		return stdout
+	default:
+		return ""
 	}
-	return strings.Join(lines[len(lines)-n:], "\n")
 }
 
 func normalizeReviewResult(result *model.ReviewResult) {

@@ -35,6 +35,7 @@ if [ "$1" = "login" ]; then
 fi
 
 # exec mode: log context for assertions
+stdin_payload="$(cat)"
 {
   echo "CWD=$(pwd)"
   echo "GITEA_TOKEN=${GITEA_TOKEN}"
@@ -46,6 +47,7 @@ fi
     echo "ARG[$i]=$a"
     i=$((i+1))
   done
+  echo "STDIN=${stdin_payload}"
 } >> "$STUB_LOG"
 
 # locate -o <path>
@@ -148,6 +150,7 @@ func TestRunner_ReviewNew(t *testing.T) {
 	// required flags / subcommand for a new review.
 	for _, want := range []string{
 		"ARG[0]=exec",
+		"ARG[1]=-",
 		"approval_policy=never",
 		"sandbox_mode=read-only",
 		"--output-schema",
@@ -197,6 +200,9 @@ func TestRunner_ReviewResume(t *testing.T) {
 	}
 	if !strings.Contains(log, "ARG[2]=prev-session-123") {
 		t.Errorf("resume session id missing; log:\n%s", log)
+	}
+	if !strings.Contains(log, "ARG[3]=-") {
+		t.Errorf("resume prompt should be read from stdin; log:\n%s", log)
 	}
 	// the note must be folded into the prompt.
 	if !strings.Contains(log, "head moved abc->def") {
@@ -249,6 +255,9 @@ func TestRunner_Ask(t *testing.T) {
 	log := string(logb)
 	if !strings.Contains(log, "ARG[1]=resume") || !strings.Contains(log, "ARG[2]=sess-1") {
 		t.Errorf("Ask did not resume the given session; log:\n%s", log)
+	}
+	if !strings.Contains(log, "ARG[3]=-") {
+		t.Errorf("Ask prompt should be read from stdin; log:\n%s", log)
 	}
 	if !strings.Contains(log, "is this fixed?") {
 		t.Errorf("Ask question missing from args; log:\n%s", log)
