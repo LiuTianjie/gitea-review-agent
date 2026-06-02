@@ -225,6 +225,43 @@ func TestServerValidSignatureInvokesOnEvent(t *testing.T) {
 	}
 }
 
+func TestServerPrefersSpecificEventTypeHeader(t *testing.T) {
+	const secret = "shh"
+	var got *model.WebhookEvent
+	h := NewHandler(secret, func(_ context.Context, ev *model.WebhookEvent) error {
+		got = ev
+		return nil
+	})
+	srv := httptest.NewServer(h.Routes())
+	defer srv.Close()
+
+	body := []byte(strings.Replace(pullRequestBody, `"action":"opened"`, `"action":"synchronized"`, 1))
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhook", strings.NewReader(string(body)))
+	req.Header.Set(headerEvent, "pull_request")
+	req.Header.Set(headerEventType, "pull_request_sync")
+	req.Header.Set(headerDelivery, "delivery-sync-1")
+	req.Header.Set(headerSignature, sign(body, secret))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got == nil {
+		t.Fatalf("OnEvent was not invoked")
+	}
+	if got.Event != model.EventPullRequest || got.Action != "synchronized" {
+		t.Fatalf("event = %s/%s, want pull_request/synchronized", got.Event, got.Action)
+	}
+	if got.DeliveryID != "delivery-sync-1" {
+		t.Errorf("DeliveryID = %q, want delivery-sync-1", got.DeliveryID)
+	}
+}
+
 func TestServerInvalidSignatureRejected(t *testing.T) {
 	const secret = "shh"
 	called := false

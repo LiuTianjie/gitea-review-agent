@@ -66,7 +66,7 @@ Volumes: `/data` (sqlite), `/cache` (mirrors), `/work` (worktrees),
 5. **Gitea webhook** (per repo or org-level):
    - URL `http://<host>:8080/webhook`, Content-Type `application/json`
    - Secret = the webhook secret you set in the console
-   - Events: **Pull Request** + **Issue Comment**
+   - Events: **Pull Request** + **Pull Request Sync** + **Issue Comment**
 
 ## Usage
 

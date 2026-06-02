@@ -11,6 +11,7 @@ import (
 // Gitea webhook headers.
 const (
 	headerEvent     = "X-Gitea-Event"
+	headerEventType = "X-Gitea-Event-Type"
 	headerDelivery  = "X-Gitea-Delivery"
 	headerSignature = "X-Gitea-Signature"
 )
@@ -77,7 +78,10 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	eventType := r.Header.Get(headerEvent)
+	eventType := r.Header.Get(headerEventType)
+	if eventType == "" {
+		eventType = r.Header.Get(headerEvent)
+	}
 	ev, err := Parse(eventType, body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
