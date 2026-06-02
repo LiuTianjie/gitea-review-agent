@@ -20,6 +20,10 @@
           "body": { "type": "string" }
         }
       }
+    },
+    "resolved_fingerprints": {
+      "type": "array",
+      "items": { "type": "string" }
     }
   }
 }

@@ -4,6 +4,8 @@ package model
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"time"
 )
 
@@ -127,11 +129,18 @@ func (f Finding) FingerprintInput() string {
 	return f.Path + "|" + f.Title + "|" + string(f.Severity)
 }
 
+// Fingerprint is a stable sha256 key for deduplicating findings across runs.
+func (f Finding) Fingerprint() string {
+	sum := sha256.Sum256([]byte(f.FingerprintInput()))
+	return hex.EncodeToString(sum[:])
+}
+
 // ReviewResult is the structured output schema codex returns.
 type ReviewResult struct {
-	Summary         string    `json:"summary"`
-	OverallSeverity Severity  `json:"overall_severity"`
-	Findings        []Finding `json:"findings"`
+	Summary              string    `json:"summary"`
+	OverallSeverity      Severity  `json:"overall_severity"`
+	Findings             []Finding `json:"findings"`
+	ResolvedFingerprints []string  `json:"resolved_fingerprints"`
 
 	// SessionID is the codex thread_id (from thread.started), filled by the runner.
 	SessionID string `json:"-"`
@@ -257,6 +266,7 @@ type Store interface {
 
 	// Findings
 	SaveFindings(ctx context.Context, pullID int64, headSHA string, fs []Finding) error
+	MarkFindingsFixed(ctx context.Context, pullID int64, fingerprints []string) error
 	ListFindings(ctx context.Context, pullID int64) ([]StoredFinding, error)
 	MarkFindingPosted(ctx context.Context, findingID, commentID, reviewID int64) error
 

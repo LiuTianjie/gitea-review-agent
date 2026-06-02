@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 
@@ -17,6 +18,45 @@ func newTestStore(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { st.Close() })
 	return st
+}
+
+func TestOpenMigratesExistingFindingsTable(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open old sqlite: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE findings(
+		id INTEGER PRIMARY KEY, pull_id INTEGER REFERENCES pulls(id),
+		fingerprint TEXT, path TEXT, line INTEGER, side TEXT, severity TEXT,
+		gitea_comment_id INTEGER, review_id INTEGER,
+		first_seen_sha TEXT, status TEXT, UNIQUE(pull_id,fingerprint))`); err != nil {
+		t.Fatalf("create old findings table: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close old sqlite: %v", err)
+	}
+
+	st, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open migrated store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	ctx := context.Background()
+	pr := model.PRRef{Owner: "acme", Repo: "widgets", Number: 12}
+	if err := st.UpsertPull(ctx, &model.PullState{PR: pr, HeadSHA: "sha0"}); err != nil {
+		t.Fatalf("UpsertPull after migration: %v", err)
+	}
+	pull, err := st.GetPull(ctx, pr)
+	if err != nil {
+		t.Fatalf("GetPull: %v", err)
+	}
+	if err := st.SaveFindings(ctx, pull.ID, "sha1", []model.Finding{{
+		Path: "a.go", Line: 10, Side: model.SideNew, Severity: model.SeverityHigh, Title: "bug A", Body: "x",
+	}}); err != nil {
+		t.Fatalf("SaveFindings after migration: %v", err)
+	}
 }
 
 func sampleEvent(deliveryID string) *model.WebhookEvent {
@@ -396,10 +436,24 @@ func TestSaveAndListFindings(t *testing.T) {
 		if sf.Fingerprint == "" {
 			t.Fatalf("finding %q has empty fingerprint", sf.Path)
 		}
+		if sf.Title == "" || sf.Body == "" {
+			t.Fatalf("finding %q did not persist title/body: %+v", sf.Path, sf)
+		}
+	}
+
+	if err := st.MarkFindingsFixed(ctx, pull.ID, []string{got[0].Fingerprint}); err != nil {
+		t.Fatalf("MarkFindingsFixed: %v", err)
+	}
+	fixed, err := st.ListFindings(ctx, pull.ID)
+	if err != nil {
+		t.Fatalf("ListFindings fixed: %v", err)
+	}
+	if fixed[0].Status != "fixed" {
+		t.Fatalf("MarkFindingsFixed status=%q, want fixed", fixed[0].Status)
 	}
 
 	// Re-save the same findings with a new head SHA: upsert by fingerprint,
-	// no duplicate rows, first_seen_sha preserved.
+	// no duplicate rows, first_seen_sha preserved, and still-current findings reopen.
 	if err := st.SaveFindings(ctx, pull.ID, "sha2", fs); err != nil {
 		t.Fatalf("SaveFindings resave: %v", err)
 	}
@@ -412,6 +466,9 @@ func TestSaveAndListFindings(t *testing.T) {
 	}
 	if got2[0].FirstSeenSHA != "sha1" {
 		t.Fatalf("resave clobbered first_seen_sha: %q", got2[0].FirstSeenSHA)
+	}
+	if got2[0].Status != "open" {
+		t.Fatalf("resave did not reopen current finding: %q", got2[0].Status)
 	}
 
 	// MarkFindingPosted records comment + review ids.

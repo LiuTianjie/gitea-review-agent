@@ -2,20 +2,12 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"github.com/turning4th/codex-gitea/internal/model"
 )
-
-// fingerprint computes the stable dedup key for a finding (sha256 hex of its
-// FingerprintInput).
-func fingerprint(f model.Finding) string {
-	sum := sha256.Sum256([]byte(f.FingerprintInput()))
-	return hex.EncodeToString(sum[:])
-}
 
 // SaveFindings upserts findings for a pull by (pull_id, fingerprint). New rows
 // get status='open' and first_seen_sha=headSHA; existing rows keep their
@@ -31,16 +23,19 @@ func (s *Store) SaveFindings(ctx context.Context, pullID int64, headSHA string, 
 	defer tx.Rollback()
 
 	for _, f := range fs {
-		fp := fingerprint(f)
+		fp := f.Fingerprint()
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO findings(pull_id,fingerprint,path,line,side,severity,first_seen_sha,status)
-			 VALUES(?,?,?,?,?,?,?,'open')
+			`INSERT INTO findings(pull_id,fingerprint,path,line,side,severity,title,body,first_seen_sha,status)
+			 VALUES(?,?,?,?,?,?,?,?,?,'open')
 			 ON CONFLICT(pull_id,fingerprint) DO UPDATE SET
 			   path=excluded.path,
 			   line=excluded.line,
 			   side=excluded.side,
-			   severity=excluded.severity`,
-			pullID, fp, f.Path, f.Line, string(f.Side), string(f.Severity), headSHA); err != nil {
+			   severity=excluded.severity,
+			   title=excluded.title,
+			   body=excluded.body,
+			   status='open'`,
+			pullID, fp, f.Path, f.Line, string(f.Side), string(f.Severity), f.Title, f.Body, headSHA); err != nil {
 			return fmt.Errorf("upsert finding: %w", err)
 		}
 	}
@@ -50,10 +45,38 @@ func (s *Store) SaveFindings(ctx context.Context, pullID int64, headSHA string, 
 	return nil
 }
 
+// MarkFindingsFixed marks explicitly resolved prior findings as fixed.
+func (s *Store) MarkFindingsFixed(ctx context.Context, pullID int64, fingerprints []string) error {
+	if len(fingerprints) == 0 {
+		return nil
+	}
+	placeholders := make([]string, 0, len(fingerprints))
+	args := make([]any, 0, len(fingerprints)+1)
+	args = append(args, pullID)
+	for _, fp := range fingerprints {
+		fp = strings.TrimSpace(fp)
+		if fp == "" {
+			continue
+		}
+		placeholders = append(placeholders, "?")
+		args = append(args, fp)
+	}
+	if len(placeholders) == 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE findings SET status='fixed' WHERE pull_id=? AND fingerprint IN (`+strings.Join(placeholders, ",")+`)`,
+		args...)
+	if err != nil {
+		return fmt.Errorf("mark findings fixed: %w", err)
+	}
+	return nil
+}
+
 // ListFindings returns all stored findings for a pull, oldest first.
 func (s *Store) ListFindings(ctx context.Context, pullID int64) ([]model.StoredFinding, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, pull_id, fingerprint, path, line, side, severity,
+		`SELECT id, pull_id, fingerprint, path, line, side, severity, title, body,
 		        gitea_comment_id, review_id, first_seen_sha, status
 		 FROM findings WHERE pull_id=? ORDER BY id`, pullID)
 	if err != nil {
@@ -68,18 +91,22 @@ func (s *Store) ListFindings(ctx context.Context, pullID int64) ([]model.StoredF
 			line      sql.NullInt64
 			side      sql.NullString
 			severity  sql.NullString
+			title     sql.NullString
+			body      sql.NullString
 			commentID sql.NullInt64
 			reviewID  sql.NullInt64
 			firstSeen sql.NullString
 			status    sql.NullString
 		)
 		if err := rows.Scan(&sf.ID, &sf.PullID, &sf.Fingerprint, &sf.Path, &line,
-			&side, &severity, &commentID, &reviewID, &firstSeen, &status); err != nil {
+			&side, &severity, &title, &body, &commentID, &reviewID, &firstSeen, &status); err != nil {
 			return nil, fmt.Errorf("scan finding: %w", err)
 		}
 		sf.Line = int(line.Int64)
 		sf.Side = model.Side(side.String)
 		sf.Severity = model.Severity(severity.String)
+		sf.Title = title.String
+		sf.Body = body.String
 		sf.GiteaCommentID = commentID.Int64
 		sf.ReviewID = reviewID.Int64
 		sf.FirstSeenSHA = firstSeen.String

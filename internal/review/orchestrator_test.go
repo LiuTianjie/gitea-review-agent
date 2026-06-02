@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 
@@ -12,17 +13,21 @@ import (
 // ---------- fakes ----------
 
 type fakeStore struct {
-	mu       sync.Mutex
-	pulls    map[string]*model.PullState
-	findings map[int64][]model.Finding
-	lastRev  map[string]int64
+	mu             sync.Mutex
+	pulls          map[string]*model.PullState
+	findings       map[int64][]model.Finding
+	storedFindings map[int64][]model.StoredFinding
+	fixed          map[int64][]string
+	lastRev        map[string]int64
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		pulls:    map[string]*model.PullState{},
-		findings: map[int64][]model.Finding{},
-		lastRev:  map[string]int64{},
+		pulls:          map[string]*model.PullState{},
+		findings:       map[int64][]model.Finding{},
+		storedFindings: map[int64][]model.StoredFinding{},
+		fixed:          map[int64][]string{},
+		lastRev:        map[string]int64{},
 	}
 }
 
@@ -76,6 +81,30 @@ func (s *fakeStore) SaveFindings(_ context.Context, pullID int64, _ string, fs [
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.findings[pullID] = fs
+	stored := make([]model.StoredFinding, 0, len(fs))
+	for i, f := range fs {
+		stored = append(stored, model.StoredFinding{
+			Finding:     f,
+			ID:          int64(i + 1),
+			PullID:      pullID,
+			Fingerprint: f.Fingerprint(),
+			Status:      "open",
+		})
+	}
+	s.storedFindings[pullID] = stored
+	return nil
+}
+
+func (s *fakeStore) MarkFindingsFixed(_ context.Context, pullID int64, fingerprints []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fixed[pullID] = append(s.fixed[pullID], fingerprints...)
+	status := stringSet(fingerprints)
+	for i := range s.storedFindings[pullID] {
+		if status[s.storedFindings[pullID][i].Fingerprint] {
+			s.storedFindings[pullID][i].Status = "fixed"
+		}
+	}
 	return nil
 }
 
@@ -90,8 +119,13 @@ func (s *fakeStore) RecoverRunning(context.Context) error                       
 func (s *fakeStore) AppendJobLog(context.Context, int64, string, string) error       { return nil }
 func (s *fakeStore) ListJobs(context.Context, int) ([]model.JobView, error)          { return nil, nil }
 func (s *fakeStore) GetJob(context.Context, int64) (*model.Job, error)               { return nil, nil }
-func (s *fakeStore) ListFindings(context.Context, int64) ([]model.StoredFinding, error) {
-	return nil, nil
+func (s *fakeStore) ListFindings(_ context.Context, pullID int64) ([]model.StoredFinding, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	got := s.storedFindings[pullID]
+	out := make([]model.StoredFinding, len(got))
+	copy(out, got)
+	return out, nil
 }
 func (s *fakeStore) MarkFindingPosted(context.Context, int64, int64, int64) error { return nil }
 func (s *fakeStore) GetSetting(context.Context, string) (string, bool, error)     { return "", false, nil }
@@ -237,6 +271,78 @@ func TestReview_Synchronized_ResumesAndDismisses(t *testing.T) {
 	}
 	if gt.lastEvent != model.ReviewEventComment {
 		t.Errorf("event = %s, want COMMENT (low severity)", gt.lastEvent)
+	}
+}
+
+func TestReview_Synchronized_CarriesForwardPriorOpenFindings(t *testing.T) {
+	st := newFakeStore()
+	pr := model.PRRef{Owner: "alice", Repo: "repo", Number: 7}
+	st.pulls["alice__repo"] = &model.PullState{
+		ID: 1, PR: pr, SessionID: "thread-1", HeadSHA: "old999", BaseRef: "main", LastReviewID: 42,
+	}
+	prior := model.Finding{
+		Path: "calc.go", Line: 19, Side: model.SideNew,
+		Severity: model.SeverityHigh, Title: "div by zero", Body: "boom",
+	}
+	fp := prior.Fingerprint()
+	st.storedFindings[1] = []model.StoredFinding{{
+		Finding: prior, ID: 10, PullID: 1, Fingerprint: fp, FirstSeenSHA: "old999", Status: "open",
+	}}
+	cx := &fakeCodex{result: &model.ReviewResult{
+		Summary: "rechecked", OverallSeverity: model.Severity("none"), SessionID: "thread-1",
+	}}
+	gt := &fakeGitea{diff: diffWith("calc.go", 19)}
+	o := &Orchestrator{Store: st, Cache: &fakeCache{}, Codex: cx, Gitea: gt}
+
+	if err := o.Process(context.Background(), prEvent("synchronized", "new222")); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if !strings.Contains(cx.lastIn.Note, fp) {
+		t.Fatalf("resume note does not include prior fingerprint %s: %q", fp, cx.lastIn.Note)
+	}
+	if gt.lastEvent != model.ReviewEventRequestChanges {
+		t.Fatalf("event = %s, want REQUEST_CHANGES because prior high finding was carried", gt.lastEvent)
+	}
+	if len(gt.lastComments) != 1 || gt.lastComments[0].NewPosition != 19 {
+		t.Fatalf("carried finding not posted inline: %+v", gt.lastComments)
+	}
+	if got := st.findings[1]; len(got) != 1 || got[0].Title != prior.Title {
+		t.Fatalf("carried finding not persisted: %+v", got)
+	}
+}
+
+func TestReview_Synchronized_MarksExplicitlyResolvedPriorFindingsFixed(t *testing.T) {
+	st := newFakeStore()
+	pr := model.PRRef{Owner: "alice", Repo: "repo", Number: 7}
+	st.pulls["alice__repo"] = &model.PullState{
+		ID: 1, PR: pr, SessionID: "thread-1", HeadSHA: "old999", BaseRef: "main", LastReviewID: 42,
+	}
+	prior := model.Finding{
+		Path: "calc.go", Line: 19, Side: model.SideNew,
+		Severity: model.SeverityHigh, Title: "div by zero", Body: "boom",
+	}
+	fp := prior.Fingerprint()
+	st.storedFindings[1] = []model.StoredFinding{{
+		Finding: prior, ID: 10, PullID: 1, Fingerprint: fp, FirstSeenSHA: "old999", Status: "open",
+	}}
+	cx := &fakeCodex{result: &model.ReviewResult{
+		Summary: "fixed", OverallSeverity: model.Severity("none"), SessionID: "thread-1",
+		ResolvedFingerprints: []string{fp},
+	}}
+	gt := &fakeGitea{diff: diffWith("calc.go", 19)}
+	o := &Orchestrator{Store: st, Cache: &fakeCache{}, Codex: cx, Gitea: gt}
+
+	if err := o.Process(context.Background(), prEvent("synchronized", "new222")); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if gt.lastEvent != model.ReviewEventComment {
+		t.Fatalf("event = %s, want COMMENT because prior finding was resolved", gt.lastEvent)
+	}
+	if len(gt.lastComments) != 0 {
+		t.Fatalf("resolved finding should not be posted inline: %+v", gt.lastComments)
+	}
+	if got := st.fixed[1]; len(got) != 1 || got[0] != fp {
+		t.Fatalf("resolved fingerprint not marked fixed: %v", got)
 	}
 }
 

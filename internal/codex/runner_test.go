@@ -154,6 +154,9 @@ func TestRunner_ReviewNew(t *testing.T) {
 		"--skip-git-repo-check",
 		"-o",
 		"Write all human-facing review output in Simplified Chinese",
+		"git diff --name-only <base>...HEAD",
+		".github/copilot-instructions.md",
+		"concrete failure mode",
 	} {
 		if !strings.Contains(log, want) {
 			t.Errorf("expected arg %q in stub log:\n%s", want, log)
@@ -201,6 +204,10 @@ func TestRunner_ReviewResume(t *testing.T) {
 	}
 	if !strings.Contains(log, "Write all human-facing review output in Simplified Chinese") {
 		t.Errorf("resume prompt missing language instruction; log:\n%s", log)
+	}
+	if !strings.Contains(log, "prioritize correctness regressions") &&
+		!strings.Contains(log, "Prioritize correctness regressions") {
+		t.Errorf("resume prompt missing review quality guidance; log:\n%s", log)
 	}
 }
 

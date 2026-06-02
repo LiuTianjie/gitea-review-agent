@@ -18,6 +18,7 @@ CREATE INDEX IF NOT EXISTS job_logs_job ON job_logs(job_id, id);
 CREATE TABLE IF NOT EXISTS findings(
   id INTEGER PRIMARY KEY, pull_id INTEGER REFERENCES pulls(id),
   fingerprint TEXT, path TEXT, line INTEGER, side TEXT, severity TEXT,
+  title TEXT, body TEXT,
   gitea_comment_id INTEGER, review_id INTEGER,
   first_seen_sha TEXT, status TEXT, UNIQUE(pull_id,fingerprint));
 CREATE TABLE IF NOT EXISTS settings(

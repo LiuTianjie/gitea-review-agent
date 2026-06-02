@@ -109,10 +109,15 @@ func (o *Orchestrator) review(ctx context.Context, jobID int64, ev *model.Webhoo
 	sessionID := ""
 	prevHead := ""
 	var prevReviewID int64
+	var priorOpen []model.StoredFinding
 	if prev != nil {
 		sessionID = prev.SessionID
 		prevHead = prev.HeadSHA
 		prevReviewID = prev.LastReviewID
+		priorOpen, err = o.openFindings(ctx, prev.ID)
+		if err != nil {
+			return err
+		}
 	}
 
 	o.jobLog(ctx, jobID, "git", "preparing worktree")
@@ -142,12 +147,15 @@ func (o *Orchestrator) review(ctx context.Context, jobID int64, ev *model.Webhoo
 		in.SessionID = sessionID
 		in.Note = fmt.Sprintf("PR head 已从 %s 更新到 %s。请基于 %s 重新审查当前 diff，并在摘要中说明之前报告的问题哪些已经修复。", shortSHA(prevHead), shortSHA(ev.HeadSHA), ev.BaseRef)
 	}
+	in.Note = appendPriorFindingsNote(in.Note, priorOpen)
 
 	o.jobLog(ctx, jobID, "codex", "review started")
 	result, err := o.Codex.Review(ctx, in)
 	if err != nil {
 		return fmt.Errorf("codex review: %w", err)
 	}
+	result.Findings = carryForwardFindings(result.Findings, priorOpen, result.ResolvedFingerprints)
+	result.OverallSeverity = highestSeverity(result.Findings, result.OverallSeverity)
 	o.jobLog(ctx, jobID, "codex", fmt.Sprintf("review finished: %d findings, session=%s", len(result.Findings), result.SessionID))
 
 	// Persist PR state + session id.
@@ -188,6 +196,9 @@ func (o *Orchestrator) review(ctx context.Context, jobID int64, ev *model.Webhoo
 	if pullRow != nil {
 		if err := o.Store.SaveFindings(ctx, pullRow.ID, ev.HeadSHA, result.Findings); err != nil {
 			o.logf("save findings: %v", err)
+		}
+		if err := o.Store.MarkFindingsFixed(ctx, pullRow.ID, resolvedOnly(result.ResolvedFingerprints, result.Findings)); err != nil {
+			o.logf("mark fixed findings: %v", err)
 		}
 	}
 	if err := o.Store.SetLastReview(ctx, pr, reviewID); err != nil {
@@ -260,6 +271,160 @@ func (o *Orchestrator) matchTrigger(body string) (string, bool) {
 }
 
 // ---------- helpers ----------
+
+func (o *Orchestrator) openFindings(ctx context.Context, pullID int64) ([]model.StoredFinding, error) {
+	stored, err := o.Store.ListFindings(ctx, pullID)
+	if err != nil {
+		return nil, fmt.Errorf("list prior findings: %w", err)
+	}
+	open := make([]model.StoredFinding, 0, len(stored))
+	for _, sf := range stored {
+		if sf.Status == "" || sf.Status == "open" {
+			open = append(open, sf)
+		}
+	}
+	return open, nil
+}
+
+func appendPriorFindingsNote(note string, prior []model.StoredFinding) string {
+	if len(prior) == 0 {
+		return note
+	}
+	type priorFindingNote struct {
+		Fingerprint  string         `json:"fingerprint"`
+		Path         string         `json:"path"`
+		Line         int            `json:"line"`
+		Side         model.Side     `json:"side"`
+		Severity     model.Severity `json:"severity"`
+		Title        string         `json:"title"`
+		Body         string         `json:"body"`
+		FirstSeenSHA string         `json:"first_seen_sha,omitempty"`
+	}
+	items := make([]priorFindingNote, 0, len(prior))
+	for _, sf := range prior {
+		items = append(items, priorFindingNote{
+			Fingerprint:  sf.Fingerprint,
+			Path:         sf.Path,
+			Line:         sf.Line,
+			Side:         sf.Side,
+			Severity:     sf.Severity,
+			Title:        sf.Title,
+			Body:         sf.Body,
+			FirstSeenSHA: sf.FirstSeenSHA,
+		})
+	}
+	b, err := json.Marshal(items)
+	if err != nil {
+		return note
+	}
+	var out strings.Builder
+	if strings.TrimSpace(note) != "" {
+		out.WriteString(strings.TrimSpace(note))
+		out.WriteString("\n\n")
+	}
+	out.WriteString("以下是此前仍处于 open 状态的问题，请逐条复核：\n")
+	out.Write(b)
+	out.WriteString("\n\n如果某个历史问题仍然存在，或你无法从当前代码明确确认已经修复，请把它继续放入 findings。只有在确认已经修复时，才从 findings 中省略，并把对应 fingerprint 放入 resolved_fingerprints。")
+	return out.String()
+}
+
+func carryForwardFindings(current []model.Finding, prior []model.StoredFinding, resolved []string) []model.Finding {
+	if len(prior) == 0 {
+		return current
+	}
+	resolvedSet := stringSet(resolved)
+	seen := make(map[string]bool, len(current))
+	out := make([]model.Finding, 0, len(current)+len(prior))
+	for _, f := range current {
+		fp := f.Fingerprint()
+		seen[fp] = true
+		out = append(out, f)
+	}
+	for _, sf := range prior {
+		fp := strings.TrimSpace(sf.Fingerprint)
+		if fp == "" {
+			fp = sf.Finding.Fingerprint()
+		}
+		if resolvedSet[fp] || seen[fp] {
+			continue
+		}
+		f := sf.Finding
+		if strings.TrimSpace(f.Title) == "" {
+			f.Title = "Previously reported issue"
+		}
+		if strings.TrimSpace(f.Body) == "" {
+			f.Body = "This finding was reported in an earlier review and was not explicitly marked fixed in this run."
+		}
+		out = append(out, f)
+		seen[fp] = true
+	}
+	return out
+}
+
+func highestSeverity(fs []model.Finding, _ model.Severity) model.Severity {
+	if len(fs) == 0 {
+		return model.Severity("none")
+	}
+	best := model.SeverityInfo
+	for _, f := range fs {
+		if severityRank(f.Severity) > severityRank(best) {
+			best = f.Severity
+		}
+	}
+	if best == model.SeverityInfo {
+		return model.SeverityLow
+	}
+	return best
+}
+
+func severityRank(s model.Severity) int {
+	switch s {
+	case model.SeverityInfo:
+		return 0
+	case model.SeverityLow:
+		return 1
+	case model.SeverityMedium:
+		return 2
+	case model.SeverityHigh:
+		return 3
+	case model.SeverityCritical:
+		return 4
+	default:
+		return -1
+	}
+}
+
+func resolvedOnly(resolved []string, findings []model.Finding) []string {
+	if len(resolved) == 0 {
+		return nil
+	}
+	current := make(map[string]bool, len(findings))
+	for _, f := range findings {
+		current[f.Fingerprint()] = true
+	}
+	out := make([]string, 0, len(resolved))
+	seen := map[string]bool{}
+	for _, fp := range resolved {
+		fp = strings.TrimSpace(fp)
+		if fp == "" || current[fp] || seen[fp] {
+			continue
+		}
+		out = append(out, fp)
+		seen[fp] = true
+	}
+	return out
+}
+
+func stringSet(items []string) map[string]bool {
+	out := make(map[string]bool, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			out[item] = true
+		}
+	}
+	return out
+}
 
 func mapFindings(diff model.DiffMap, fs []model.Finding) (comments []model.ReviewComment, unmapped []model.Finding) {
 	for _, f := range fs {

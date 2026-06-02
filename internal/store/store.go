@@ -52,6 +52,10 @@ func Open(dbPath string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err := migrateSchema(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
 }
 
@@ -84,6 +88,53 @@ func nullableTime(ns sql.NullString) *time.Time {
 	}
 	t := parseTime(ns.String)
 	return &t
+}
+
+func migrateSchema(db *sql.DB) error {
+	for _, col := range []struct {
+		table string
+		name  string
+		def   string
+	}{
+		{table: "findings", name: "title", def: "TEXT"},
+		{table: "findings", name: "body", def: "TEXT"},
+	} {
+		if err := ensureColumn(db, col.table, col.name, col.def); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureColumn(db *sql.DB, table, name, def string) error {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return fmt.Errorf("inspect %s schema: %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid       int
+			colName   string
+			colType   string
+			notNull   int
+			defaultV  sql.NullString
+			primaryKy int
+		)
+		if err := rows.Scan(&cid, &colName, &colType, &notNull, &defaultV, &primaryKy); err != nil {
+			return fmt.Errorf("scan %s schema: %w", table, err)
+		}
+		if colName == name {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate %s schema: %w", table, err)
+	}
+	if _, err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + name + ` ` + def); err != nil {
+		return fmt.Errorf("add %s.%s: %w", table, name, err)
+	}
+	return nil
 }
 
 // ensureRepo upserts a repos row by (owner,name) and returns its id.
