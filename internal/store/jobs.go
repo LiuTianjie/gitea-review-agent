@@ -158,11 +158,17 @@ func (s *Store) RecoverRunning(ctx context.Context) error {
 	return nil
 }
 
-// ListJobs returns up to limit jobs (newest first) as console read models,
-// joined to repo owner/name and the PR's session id.
-func (s *Store) ListJobs(ctx context.Context, limit int) ([]model.JobView, error) {
+// ListJobs returns a page of jobs (newest first) as console read models, joined
+// to repo owner/name and the PR's session id.
+func (s *Store) ListJobs(ctx context.Context, limit, offset int) ([]model.JobView, error) {
 	if limit <= 0 {
-		limit = 50
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT j.id, r.owner, r.name, j.pr_number, j.event, j.action,
@@ -171,7 +177,7 @@ func (s *Store) ListJobs(ctx context.Context, limit int) ([]model.JobView, error
 		 FROM jobs j
 		 LEFT JOIN repos r ON r.id = j.repo_id
 		 LEFT JOIN pulls p ON p.repo_id = j.repo_id AND p.number = j.pr_number
-		 ORDER BY j.id DESC LIMIT ?`, limit)
+		 ORDER BY j.created_at DESC, j.id DESC LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
 	}
@@ -220,6 +226,52 @@ func (s *Store) ListJobs(ctx context.Context, limit int) ([]model.JobView, error
 		out[i].Logs = logs
 	}
 	return out, nil
+}
+
+// CountJobs returns the total number of queued jobs.
+func (s *Store) CountJobs(ctx context.Context) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count jobs: %w", err)
+	}
+	return n, nil
+}
+
+// JobStats returns aggregate job counts for the console dashboard.
+func (s *Store) JobStats(ctx context.Context) (model.JobStats, error) {
+	var stats model.JobStats
+	err := s.db.QueryRowContext(ctx,
+		`SELECT
+		    COUNT(*),
+		    COALESCE(SUM(CASE WHEN event=? THEN 1 ELSE 0 END), 0),
+		    COALESCE(SUM(CASE WHEN event=? AND status=? THEN 1 ELSE 0 END), 0),
+		    COALESCE(SUM(CASE WHEN status=? THEN 1 ELSE 0 END), 0),
+		    COALESCE(SUM(CASE WHEN status=? THEN 1 ELSE 0 END), 0),
+		    COALESCE(SUM(CASE WHEN status=? THEN 1 ELSE 0 END), 0),
+		    COALESCE(SUM(CASE WHEN status=? THEN 1 ELSE 0 END), 0),
+		    COALESCE(SUM(CASE WHEN status=? THEN 1 ELSE 0 END), 0)
+		 FROM jobs`,
+		string(model.EventPullRequest),
+		string(model.EventPullRequest), string(model.JobDone),
+		string(model.JobDone),
+		string(model.JobFailed),
+		string(model.JobRunning),
+		string(model.JobPending),
+		string(model.JobSuperseded),
+	).Scan(
+		&stats.TotalJobs,
+		&stats.ReviewJobs,
+		&stats.ReviewedJobs,
+		&stats.Done,
+		&stats.Failed,
+		&stats.Running,
+		&stats.Pending,
+		&stats.Superseded,
+	)
+	if err != nil {
+		return model.JobStats{}, fmt.Errorf("job stats: %w", err)
+	}
+	return stats, nil
 }
 
 func (s *Store) listJobLogs(ctx context.Context, jobID int64) ([]model.JobLog, error) {

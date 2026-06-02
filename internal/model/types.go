@@ -244,6 +244,18 @@ type JobLog struct {
 	CreatedAt time.Time
 }
 
+// JobStats summarizes queue/review health for the console dashboard.
+type JobStats struct {
+	TotalJobs    int
+	ReviewJobs   int
+	ReviewedJobs int
+	Done         int
+	Failed       int
+	Running      int
+	Pending      int
+	Superseded   int
+}
+
 // ---------- Ports (interfaces) ----------
 
 // Store persists jobs, PR state, findings, and console-editable settings.
@@ -255,7 +267,9 @@ type Store interface {
 	FinishJob(ctx context.Context, id int64, status JobStatus, errMsg string) error
 	RecoverRunning(ctx context.Context) error // running -> pending on boot
 	AppendJobLog(ctx context.Context, jobID int64, stage, message string) error
-	ListJobs(ctx context.Context, limit int) ([]JobView, error)
+	ListJobs(ctx context.Context, limit, offset int) ([]JobView, error)
+	CountJobs(ctx context.Context) (int, error)
+	JobStats(ctx context.Context) (JobStats, error)
 	GetJob(ctx context.Context, id int64) (*Job, error)
 
 	// Pulls / sessions

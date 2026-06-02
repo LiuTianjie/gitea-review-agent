@@ -271,19 +271,27 @@ func TestListJobs(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
 
-	if _, _, err := st.EnqueueJob(ctx, sampleEvent("d-list-1")); err != nil {
+	job1, _, err := st.EnqueueJob(ctx, sampleEvent("d-list-1"))
+	if err != nil {
 		t.Fatalf("enqueue 1: %v", err)
 	}
 	ev := sampleEvent("d-list-2")
 	ev.PR.Number = 9
-	if _, _, err := st.EnqueueJob(ctx, ev); err != nil {
+	job2, _, err := st.EnqueueJob(ctx, ev)
+	if err != nil {
 		t.Fatalf("enqueue 2: %v", err)
 	}
-	if err := st.AppendJobLog(ctx, 2, "codex", "review started"); err != nil {
+	if err := st.AppendJobLog(ctx, job2.ID, "codex", "review started"); err != nil {
 		t.Fatalf("AppendJobLog: %v", err)
 	}
+	if err := st.FinishJob(ctx, job2.ID, model.JobDone, ""); err != nil {
+		t.Fatalf("FinishJob done: %v", err)
+	}
+	if err := st.FinishJob(ctx, job1.ID, model.JobFailed, "boom"); err != nil {
+		t.Fatalf("FinishJob failed: %v", err)
+	}
 
-	views, err := st.ListJobs(ctx, 10)
+	views, err := st.ListJobs(ctx, 10, 0)
 	if err != nil {
 		t.Fatalf("ListJobs: %v", err)
 	}
@@ -299,6 +307,27 @@ func TestListJobs(t *testing.T) {
 	}
 	if len(views[0].Logs) != 1 || views[0].Logs[0].Stage != "codex" || views[0].Logs[0].Message != "review started" {
 		t.Fatalf("ListJobs logs = %+v, want codex/review started", views[0].Logs)
+	}
+	paged, err := st.ListJobs(ctx, 1, 1)
+	if err != nil {
+		t.Fatalf("ListJobs page 2: %v", err)
+	}
+	if len(paged) != 1 || paged[0].PR.Number != 7 {
+		t.Fatalf("ListJobs page 2 = %+v, want PR 7", paged)
+	}
+	total, err := st.CountJobs(ctx)
+	if err != nil {
+		t.Fatalf("CountJobs: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("CountJobs = %d, want 2", total)
+	}
+	stats, err := st.JobStats(ctx)
+	if err != nil {
+		t.Fatalf("JobStats: %v", err)
+	}
+	if stats.TotalJobs != 2 || stats.ReviewJobs != 2 || stats.ReviewedJobs != 1 || stats.Done != 1 || stats.Failed != 1 {
+		t.Fatalf("JobStats = %+v, want total/review/reviewed/done/failed = 2/2/1/1/1", stats)
 	}
 }
 

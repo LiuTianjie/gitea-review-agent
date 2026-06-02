@@ -53,7 +53,7 @@ For every concrete problem you find, emit a structured finding with:
 Also produce:
 - summary: an overall summary of the review.
 - overall_severity: the highest-impact severity across all findings (none, low, medium, high, critical); use "none" when there are no findings.
-- resolved_fingerprints: only when prior findings are provided in the prompt, include fingerprints for prior findings that are clearly fixed in the current diff; otherwise use an empty array or omit the field.
+- resolved_fingerprints: include fingerprints for prior findings that are clearly fixed in the current diff; use an empty array when none are resolved or no prior findings are provided.
 
 If there are no issues, return an empty findings array with overall_severity "none".
 Return ONLY the structured JSON result conforming to the provided output schema.`, baseRef)

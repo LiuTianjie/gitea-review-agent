@@ -117,7 +117,9 @@ func (s *fakeStore) ClaimJob(context.Context) (*model.Job, error)               
 func (s *fakeStore) FinishJob(context.Context, int64, model.JobStatus, string) error { return nil }
 func (s *fakeStore) RecoverRunning(context.Context) error                            { return nil }
 func (s *fakeStore) AppendJobLog(context.Context, int64, string, string) error       { return nil }
-func (s *fakeStore) ListJobs(context.Context, int) ([]model.JobView, error)          { return nil, nil }
+func (s *fakeStore) ListJobs(context.Context, int, int) ([]model.JobView, error)     { return nil, nil }
+func (s *fakeStore) CountJobs(context.Context) (int, error)                          { return 0, nil }
+func (s *fakeStore) JobStats(context.Context) (model.JobStats, error)                { return model.JobStats{}, nil }
 func (s *fakeStore) GetJob(context.Context, int64) (*model.Job, error)               { return nil, nil }
 func (s *fakeStore) ListFindings(_ context.Context, pullID int64) ([]model.StoredFinding, error) {
 	s.mu.Lock()

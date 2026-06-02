@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/turning4th/codex-gitea/internal/config"
@@ -238,8 +239,46 @@ type jobLogView struct {
 	CreatedAt string `json:"created_at"`
 }
 
+type jobsResponse struct {
+	Jobs       []jobView    `json:"jobs"`
+	Page       int          `json:"page"`
+	PageSize   int          `json:"page_size"`
+	Total      int          `json:"total"`
+	TotalPages int          `json:"total_pages"`
+	Stats      jobStatsView `json:"stats"`
+}
+
+type jobStatsView struct {
+	TotalJobs    int     `json:"total_jobs"`
+	ReviewJobs   int     `json:"review_jobs"`
+	ReviewedJobs int     `json:"reviewed_jobs"`
+	Done         int     `json:"done"`
+	Failed       int     `json:"failed"`
+	Running      int     `json:"running"`
+	Pending      int     `json:"pending"`
+	Superseded   int     `json:"superseded"`
+	SuccessRate  float64 `json:"success_rate"`
+}
+
 func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
-	jobs, err := c.store.ListJobs(r.Context(), 50)
+	page := parsePositiveInt(r.URL.Query().Get("page"), 1)
+	pageSize := parsePositiveInt(r.URL.Query().Get("page_size"), 20)
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	offset := (page - 1) * pageSize
+
+	jobs, err := c.store.ListJobs(r.Context(), pageSize, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	total, err := c.store.CountJobs(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	stats, err := c.store.JobStats(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -279,5 +318,39 @@ func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, jv)
 	}
-	writeJSON(w, http.StatusOK, out)
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+	completed := stats.Done + stats.Failed
+	successRate := 0.0
+	if completed > 0 {
+		successRate = float64(stats.Done) / float64(completed)
+	}
+	writeJSON(w, http.StatusOK, jobsResponse{
+		Jobs:       out,
+		Page:       page,
+		PageSize:   pageSize,
+		Total:      total,
+		TotalPages: totalPages,
+		Stats: jobStatsView{
+			TotalJobs:    stats.TotalJobs,
+			ReviewJobs:   stats.ReviewJobs,
+			ReviewedJobs: stats.ReviewedJobs,
+			Done:         stats.Done,
+			Failed:       stats.Failed,
+			Running:      stats.Running,
+			Pending:      stats.Pending,
+			Superseded:   stats.Superseded,
+			SuccessRate:  successRate,
+		},
+	})
+}
+
+func parsePositiveInt(raw string, fallback int) int {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
 }

@@ -1,7 +1,7 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["summary", "overall_severity", "findings"],
+  "required": ["summary", "overall_severity", "findings", "resolved_fingerprints"],
   "properties": {
     "summary": { "type": "string" },
     "overall_severity": { "type": "string", "enum": ["none", "low", "medium", "high", "critical"] },

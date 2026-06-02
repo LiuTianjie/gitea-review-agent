@@ -350,13 +350,29 @@ func TestJobsEndpoint(t *testing.T) {
 	c, _ := newTestConsole(t, nil)
 	h := c.Routes()
 
-	w := do(t, h, "GET", "/admin/api/jobs", "", true)
+	w := do(t, h, "GET", "/admin/api/jobs?page=1&page_size=20", "", true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("jobs: code = %d", w.Code)
 	}
-	var jobs []map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &jobs); err != nil {
+	var resp struct {
+		Jobs       []map[string]any `json:"jobs"`
+		Page       int              `json:"page"`
+		PageSize   int              `json:"page_size"`
+		Total      int              `json:"total"`
+		TotalPages int              `json:"total_pages"`
+		Stats      map[string]any   `json:"stats"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode jobs: %v (body=%s)", err, w.Body.String())
+	}
+	if resp.Page != 1 || resp.PageSize != 20 {
+		t.Fatalf("jobs pagination = page %d size %d, want 1/20", resp.Page, resp.PageSize)
+	}
+	if resp.Jobs == nil {
+		t.Fatalf("jobs response missing jobs array")
+	}
+	if resp.Stats == nil {
+		t.Fatalf("jobs response missing stats")
 	}
 }
 
