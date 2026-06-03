@@ -434,6 +434,7 @@ func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
 type analysisReportView struct {
 	ID        int64                 `json:"id"`
 	CreatedAt string                `json:"created_at"`
+	GiteaURL  string                `json:"gitea_url"`
 	Summary   model.AnalysisSummary `json:"summary"`
 }
 
@@ -448,7 +449,7 @@ func (c *Console) handleCreateAnalysisReport(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "report": toAnalysisReportView(*report)})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "report": c.toAnalysisReportView(*report)})
 }
 
 func (c *Console) handleLatestAnalysisReport(w http.ResponseWriter, r *http.Request) {
@@ -461,7 +462,7 @@ func (c *Console) handleLatestAnalysisReport(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "report": nil})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "report": toAnalysisReportView(*report)})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "report": c.toAnalysisReportView(*report)})
 }
 
 func (c *Console) handleListAnalysisReports(w http.ResponseWriter, r *http.Request) {
@@ -473,13 +474,16 @@ func (c *Console) handleListAnalysisReports(w http.ResponseWriter, r *http.Reque
 	}
 	out := make([]analysisReportView, 0, len(reports))
 	for _, report := range reports {
-		out = append(out, toAnalysisReportView(report))
+		out = append(out, c.toAnalysisReportView(report))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "reports": out})
 }
 
-func toAnalysisReportView(report model.AnalysisReport) analysisReportView {
+func (c *Console) toAnalysisReportView(report model.AnalysisReport) analysisReportView {
 	out := analysisReportView{ID: report.ID, Summary: report.Summary}
+	if cfg := c.currentConfig(); cfg != nil {
+		out.GiteaURL = strings.TrimRight(strings.TrimSpace(cfg.GiteaURL), "/")
+	}
 	if !report.CreatedAt.IsZero() {
 		out.CreatedAt = report.CreatedAt.Format(timeLayout)
 	}

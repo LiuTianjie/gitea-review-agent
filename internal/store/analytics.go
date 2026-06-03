@@ -133,10 +133,14 @@ func (s *Store) fillReviewRunSummary(ctx context.Context, summary *model.Analysi
 
 func (s *Store) fillFindingSummary(ctx context.Context, summary *model.AnalysisSummary) error {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT COALESCE(agent,'codex'), COALESCE(fingerprint,''), COALESCE(path,''), COALESCE(line,0),
-		        COALESCE(severity,'info'), COALESCE(title,''),
-		        COALESCE(status,'open'), COALESCE(last_seen_sha,''), COALESCE(tags,'')
-		 FROM findings ORDER BY id DESC`)
+		`SELECT COALESCE(f.agent,'codex'), COALESCE(f.fingerprint,''), COALESCE(f.path,''), COALESCE(f.line,0),
+		        COALESCE(f.severity,'info'), COALESCE(f.title,''),
+		        COALESCE(f.status,'open'), COALESCE(f.last_seen_sha,''), COALESCE(f.tags,''),
+		        COALESCE(r.owner,''), COALESCE(r.name,''), COALESCE(p.number,0)
+		 FROM findings f
+		 LEFT JOIN pulls p ON p.id=f.pull_id
+		 LEFT JOIN repos r ON r.id=p.repo_id
+		 ORDER BY f.id DESC`)
 	if err != nil {
 		return fmt.Errorf("finding summary: %w", err)
 	}
@@ -148,9 +152,9 @@ func (s *Store) fillFindingSummary(ctx context.Context, summary *model.AnalysisS
 	overlapAgents := map[string]map[string]bool{}
 
 	for rows.Next() {
-		var agent, fp, path, severity, title, status, lastSeen, tagsRaw string
-		var line int
-		if err := rows.Scan(&agent, &fp, &path, &line, &severity, &title, &status, &lastSeen, &tagsRaw); err != nil {
+		var agent, fp, path, severity, title, status, lastSeen, tagsRaw, owner, repo string
+		var line, pullNumber int
+		if err := rows.Scan(&agent, &fp, &path, &line, &severity, &title, &status, &lastSeen, &tagsRaw, &owner, &repo, &pullNumber); err != nil {
 			return fmt.Errorf("scan finding summary: %w", err)
 		}
 		summary.TotalFindings++
@@ -179,13 +183,17 @@ func (s *Store) fillFindingSummary(ctx context.Context, summary *model.AnalysisS
 		}
 		if (severity == string(model.SeverityHigh) || severity == string(model.SeverityCritical)) && len(summary.RecentSevere) < 10 {
 			summary.RecentSevere = append(summary.RecentSevere, model.SevereFindingSummary{
-				Agent: agent, Severity: model.Severity(severity), Title: title,
+				Agent: agent, Owner: owner, Repo: repo, PullNumber: pullNumber,
+				Severity: model.Severity(severity), Title: title,
 				Path: path, Line: line, Status: status, LastSeenSHA: lastSeen,
 			})
 		}
 		baseFP := strings.TrimPrefix(fp, agent+":")
 		if overlap[baseFP] == nil {
-			overlap[baseFP] = &model.AgentOverlapSummary{Fingerprint: baseFP, Title: title, Path: path, Line: line}
+			overlap[baseFP] = &model.AgentOverlapSummary{
+				Fingerprint: baseFP, Owner: owner, Repo: repo, PullNumber: pullNumber,
+				Title: title, Path: path, Line: line, LastSeenSHA: lastSeen,
+			}
 			overlapAgents[baseFP] = map[string]bool{}
 		}
 		overlapAgents[baseFP][agent] = true

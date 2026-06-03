@@ -549,6 +549,10 @@ func TestAnalysisReports(t *testing.T) {
 	if summary.TotalFindings != 1 || summary.HighCriticalOpen != 1 || summary.ByAgent["codex"].Findings != 1 {
 		t.Fatalf("summary mismatch: %+v", summary)
 	}
+	if len(summary.RecentSevere) != 1 || summary.RecentSevere[0].Owner != "acme" ||
+		summary.RecentSevere[0].Repo != "widgets" || summary.RecentSevere[0].PullNumber != 21 {
+		t.Fatalf("recent severe repo metadata mismatch: %+v", summary.RecentSevere)
+	}
 	hasRuntime := false
 	for _, tag := range summary.TopTags {
 		if tag.Tag == "runtime" && tag.Count == 1 {

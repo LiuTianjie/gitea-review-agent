@@ -302,6 +302,42 @@
   .analysis-card table tr:last-child td {
     border-bottom: 0;
   }
+  .source-cell {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .source-cell code {
+    overflow-wrap: anywhere;
+  }
+  .source-link {
+    color: var(--blue);
+    font-size: 12px;
+    font-weight: 650;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .source-link:hover { text-decoration: underline; }
+  .data-table {
+    width: 100%;
+    margin: 8px 0 18px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    background: #fff;
+  }
+  .data-table th {
+    position: static;
+  }
+  .data-table tr:last-child td {
+    border-bottom: 0;
+  }
+  .summary-note {
+    margin: -4px 0 10px;
+    color: var(--muted);
+    font-size: 12px;
+  }
   .badge {
     display: inline-flex; align-items: center; justify-content: center;
     min-height: 22px; padding: 0 8px;
@@ -792,6 +828,24 @@
   }
 
   function esc(s){ var d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+  function encPath(path){
+    return String(path || "").split("/").map(function(part){ return encodeURIComponent(part); }).join("/");
+  }
+  function sourceURL(baseURL, f){
+    if (!baseURL || !f || !f.owner || !f.repo || !f.path || !f.last_seen_sha) return "";
+    var url = String(baseURL).replace(/\/+$/, "") + "/" + encodeURIComponent(f.owner) + "/" + encodeURIComponent(f.repo) +
+      "/src/commit/" + encodeURIComponent(f.last_seen_sha) + "/" + encPath(f.path);
+    if (f.line) url += "#L" + encodeURIComponent(f.line);
+    return url;
+  }
+  function renderSourceCell(baseURL, f){
+    var label = (f && f.path ? f.path : "") + (f && f.line ? ":" + f.line : "");
+    var url = sourceURL(baseURL, f);
+    if (!label) return '<span class="muted">无位置</span>';
+    var code = "<code>" + esc(label) + "</code>";
+    if (!url) return code;
+    return "<span class='source-cell'>" + code + "<a class='source-link' href='" + esc(url) + "' target='_blank' rel='noopener noreferrer'>打开</a></span>";
+  }
 
   function loadEffectiveConfig(){
     fetch("/admin/api/effective-config").then(function(r){ return r.json(); }).then(function(c){
@@ -954,10 +1008,11 @@
       return;
     }
     var s = report.summary || {};
-    var rate = typeof s.success_rate === "number" ? Math.round(s.success_rate * 1000) / 10 + "%" : "--";
+    var completedRuns = (s.successful_review_runs || 0) + (s.failed_review_runs || 0);
+    var rate = completedRuns > 0 && typeof s.success_rate === "number" ? Math.round(s.success_rate * 1000) / 10 + "%" : "--";
     $("analysisMeta").textContent = "报告 #" + report.id + " · " + prettyTime(report.created_at);
     $("analysisStats").innerHTML =
-      "<div class='stat-card'><span>Review 成功率</span><strong>" + esc(rate) + "</strong><small>" + esc(s.successful_review_runs || 0) + " / " + esc((s.successful_review_runs || 0) + (s.failed_review_runs || 0)) + "</small></div>" +
+      "<div class='stat-card'><span>Review 成功率</span><strong>" + esc(rate) + "</strong><small>" + (completedRuns ? esc(s.successful_review_runs || 0) + " / " + esc(completedRuns) : "暂无运行") + "</small></div>" +
       "<div class='stat-card'><span>问题总数</span><strong>" + esc(s.total_findings || 0) + "</strong><small>findings</small></div>" +
       "<div class='stat-card'><span>Open 问题</span><strong>" + esc(s.open_findings || 0) + "</strong><small>仍需关注</small></div>" +
       "<div class='stat-card'><span>严重 Open</span><strong>" + esc(s.high_critical_open || 0) + "</strong><small>high + critical</small></div>" +
@@ -968,26 +1023,27 @@
     }).join("") : '<tr><td colspan="2" class="muted">暂无 tags</td></tr>';
     var severe = s.recent_severe || [];
     $("analysisSevere").innerHTML = severe.length ? severe.map(function(f){
-      return "<tr><td>" + esc(f.agent) + "</td><td><span class='badge s-failed'>" + esc(f.severity) + "</span></td><td><code>" + esc(f.path) + ":" + esc(f.line) + "</code></td><td>" + esc(f.title) + "</td><td>" + esc(f.status) + "</td></tr>";
+      return "<tr><td>" + esc(f.agent) + "</td><td><span class='badge s-failed'>" + esc(f.severity) + "</span></td><td>" + renderSourceCell(report.gitea_url, f) + "</td><td>" + esc(f.title) + "</td><td>" + esc(f.status) + "</td></tr>";
     }).join("") : '<tr><td colspan="5" class="muted">暂无 high/critical 问题</td></tr>';
-    renderAnalysisDetail(s);
+    renderAnalysisDetail(s, report);
   }
 
-  function renderAnalysisDetail(s){
+  function renderAnalysisDetail(s, report){
     var agents = s.by_agent || {};
     var agentRows = Object.keys(agents).sort().map(function(name){
       var a = agents[name] || {};
-      return "<div class='metric'><span>" + esc(name) + "</span><strong>" + esc(a.findings || 0) + " findings</strong><small>" + esc(a.succeeded || 0) + " ok / " + esc(a.failed || 0) + " failed</small></div>";
+      return "<tr><td>" + esc(name) + "</td><td>" + esc(a.review_runs || 0) + "</td><td>" + esc(a.succeeded || 0) + "</td><td>" + esc(a.failed || 0) + "</td><td>" + esc(a.findings || 0) + "</td><td>" + esc(a.open || 0) + "</td></tr>";
     }).join("");
     var sev = s.by_severity || {};
-    var sevText = Object.keys(sev).sort().map(function(k){ return esc(k) + ": " + esc(sev[k]); }).join("<br>");
+    var sevRows = Object.keys(sev).sort().map(function(k){ return "<tr><td>" + esc(k) + "</td><td>" + esc(sev[k]) + "</td></tr>"; }).join("");
     var repeated = (s.repeated_titles || []).map(function(t){ return "<li>" + esc(t.title) + " <strong>" + esc(t.count) + "</strong></li>"; }).join("");
-    var overlap = (s.agent_overlap || []).map(function(o){ return "<li><code>" + esc(o.path) + ":" + esc(o.line) + "</code> " + esc(o.title) + " · " + esc((o.agents || []).join(", ")) + "</li>"; }).join("");
+    var overlap = (s.agent_overlap || []).map(function(o){ return "<li>" + renderSourceCell(report.gitea_url, o) + " " + esc(o.title) + " · " + esc((o.agents || []).join(", ")) + "</li>"; }).join("");
     $("analysisDetail").innerHTML =
-      "<h2>Agent 汇总</h2><div class='detail-grid'>" + (agentRows || "<div class='empty-state'>暂无 reviewer run</div>") + "</div>" +
-      "<h2>严重度分布</h2><p>" + (sevText || "暂无 findings") + "</p>" +
-      "<h2>重复标题</h2><ul>" + (repeated || "<li class='muted'>暂无重复标题</li>") + "</ul>" +
-      "<h2>Codex / Claude 重叠</h2><ul>" + (overlap || "<li class='muted'>暂无重叠问题</li>") + "</ul>";
+      "<h2>Reviewer 对比</h2><p class='summary-note'>按 reviewer 汇总历史运行结果和发现的问题数，用来比较 Codex / Claude 的稳定性与产出量。</p>" +
+      "<table class='data-table'><thead><tr><th>Reviewer</th><th>运行</th><th>成功</th><th>失败</th><th>发现</th><th>Open</th></tr></thead><tbody>" + (agentRows || "<tr><td colspan='6' class='muted'>暂无 reviewer run</td></tr>") + "</tbody></table>" +
+      "<h2>严重度分布</h2><table class='data-table'><thead><tr><th>严重度</th><th>数量</th></tr></thead><tbody>" + (sevRows || "<tr><td colspan='2' class='muted'>暂无 findings</td></tr>") + "</tbody></table>" +
+      "<h2>重复问题标题</h2><ul>" + (repeated || "<li class='muted'>暂无重复标题</li>") + "</ul>" +
+      "<h2>双 Agent 同时发现</h2><ul>" + (overlap || "<li class='muted'>暂无重叠问题</li>") + "</ul>";
   }
 
   document.addEventListener("click", function(e){

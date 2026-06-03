@@ -349,6 +349,9 @@ type TitleSummary struct {
 
 type SevereFindingSummary struct {
 	Agent       string   `json:"agent"`
+	Owner       string   `json:"owner"`
+	Repo        string   `json:"repo"`
+	PullNumber  int      `json:"pull_number"`
 	Severity    Severity `json:"severity"`
 	Title       string   `json:"title"`
 	Path        string   `json:"path"`
@@ -359,9 +362,13 @@ type SevereFindingSummary struct {
 
 type AgentOverlapSummary struct {
 	Fingerprint string   `json:"fingerprint"`
+	Owner       string   `json:"owner"`
+	Repo        string   `json:"repo"`
+	PullNumber  int      `json:"pull_number"`
 	Title       string   `json:"title"`
 	Path        string   `json:"path"`
 	Line        int      `json:"line"`
+	LastSeenSHA string   `json:"last_seen_sha"`
 	Agents      []string `json:"agents"`
 }
 
