@@ -28,6 +28,8 @@ type Orchestrator struct {
 	Logger          *log.Logger
 }
 
+var errPullRequestClosed = errors.New("pull request is closed or merged")
+
 func (o *Orchestrator) logf(format string, args ...any) {
 	if o.Logger != nil {
 		o.Logger.Printf(format, args...)
@@ -122,12 +124,30 @@ func (o *Orchestrator) handlePR(ctx context.Context, jobID int64, ev *model.Webh
 	}
 }
 
+func (o *Orchestrator) ensurePullRequestOpen(ctx context.Context, jobID int64, pr model.PRRef) error {
+	status, err := o.Gitea.GetPullRequestStatus(ctx, pr)
+	if err != nil {
+		return fmt.Errorf("check PR status: %w", err)
+	}
+	if status.Open() {
+		return nil
+	}
+	o.jobLog(ctx, jobID, "skip", fmt.Sprintf("PR is no longer open (state=%s merged=%t); skipping review submission", status.State, status.Merged))
+	return errPullRequestClosed
+}
+
 // review runs a full (new) or incremental (resume) review and posts it.
 func (o *Orchestrator) review(ctx context.Context, jobID int64, ev *model.WebhookEvent, isUpdate bool) error {
 	pr := ev.PR
 
 	if len(o.reviewers()) == 0 {
 		return fmt.Errorf("no reviewers configured")
+	}
+	if err := o.ensurePullRequestOpen(ctx, jobID, pr); err != nil {
+		if errors.Is(err, errPullRequestClosed) {
+			return nil
+		}
+		return err
 	}
 
 	o.jobLog(ctx, jobID, "state", "loading PR state")
@@ -171,6 +191,10 @@ func (o *Orchestrator) review(ctx context.Context, jobID int64, ev *model.Webhoo
 	successes := 0
 	for _, reviewer := range o.reviewers() {
 		if err := o.runReviewer(ctx, jobID, ev, isUpdate, pull.ID, worktree, diff, reviewer); err != nil {
+			if errors.Is(err, errPullRequestClosed) {
+				o.jobLog(ctx, jobID, "skip", "PR closed or merged; stopping remaining reviewers")
+				break
+			}
 			errs = append(errs, err)
 			o.jobLog(ctx, jobID, reviewer.Name(), "failed: "+err.Error())
 			continue
@@ -240,9 +264,24 @@ func (o *Orchestrator) runReviewer(ctx context.Context, jobID int64, ev *model.W
 	if result.OverallSeverity.Blocking() || anyBlocking(result.Findings) {
 		event = model.ReviewEventRequestChanges
 	}
+	if err := o.ensurePullRequestOpen(ctx, jobID, pr); err != nil {
+		if errors.Is(err, errPullRequestClosed) {
+			if run.ID != 0 {
+				_ = o.Store.FinishReviewRun(ctx, run.ID, model.ReviewRunSkipped, "PR closed or merged before posting review", len(result.Findings))
+			}
+		}
+		return err
+	}
 	o.jobLog(ctx, jobID, "gitea", fmt.Sprintf("posting %s review: %d inline comments, verdict=%s", agent, len(comments), event))
 	reviewID, err := o.Gitea.PostReview(ctx, pr, ev.HeadSHA, event, body, comments)
 	if err != nil {
+		if isClosedReviewError(err) {
+			o.jobLog(ctx, jobID, "skip", "PR closed or merged while posting review; skipping remaining reviewers")
+			if run.ID != 0 {
+				_ = o.Store.FinishReviewRun(ctx, run.ID, model.ReviewRunSkipped, err.Error(), len(result.Findings))
+			}
+			return errPullRequestClosed
+		}
 		if run.ID != 0 {
 			_ = o.Store.FinishReviewRun(ctx, run.ID, model.ReviewRunFailed, err.Error(), len(result.Findings))
 		}
@@ -274,6 +313,16 @@ func (o *Orchestrator) runReviewer(ctx context.Context, jobID int64, ev *model.W
 	o.logf("reviewed %s/%s#%d with %s: %d findings (%d inline), verdict=%s, session=%s",
 		pr.Owner, pr.Repo, pr.Number, agent, len(result.Findings), len(comments), event, result.SessionID)
 	return nil
+}
+
+func isClosedReviewError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "closed or merged pr") ||
+		strings.Contains(msg, "closed or merged pull request") ||
+		strings.Contains(msg, "can't submit review for a closed")
 }
 
 // handleComment answers a bot-directed question on a PR by resuming its session.

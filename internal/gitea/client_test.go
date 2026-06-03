@@ -36,6 +36,28 @@ func TestGetDiff_HTTP(t *testing.T) {
 	}
 }
 
+func TestGetPullRequestStatus_HTTP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			t.Errorf("method = %s, want GET", r.Method)
+		}
+		if r.URL.Path != "/api/v1/repos/acme/widget/pulls/42" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		io.WriteString(w, `{"state":"closed","merged":true}`)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "T", srv.Client())
+	status, err := c.GetPullRequestStatus(context.Background(), testPR())
+	if err != nil {
+		t.Fatalf("GetPullRequestStatus: %v", err)
+	}
+	if status.State != "closed" || !status.Merged || status.Open() {
+		t.Fatalf("status = %+v, want closed merged non-open", status)
+	}
+}
+
 func TestPostReview_HTTP(t *testing.T) {
 	var captured reviewRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

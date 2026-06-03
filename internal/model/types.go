@@ -74,6 +74,17 @@ const (
 	ReviewEventApproved       ReviewEventType = "APPROVED"
 )
 
+// PullRequestStatus is the live state of a pull request as reported by Gitea.
+type PullRequestStatus struct {
+	State  string
+	Merged bool
+}
+
+// Open reports whether the PR can still accept reviews.
+func (s PullRequestStatus) Open() bool {
+	return !s.Merged && (s.State == "" || s.State == "open")
+}
+
 // ---------- Webhook / Job ----------
 
 // WebhookEvent is the normalized result of parsing a Gitea webhook payload.
@@ -178,6 +189,7 @@ const (
 	ReviewRunRunning ReviewRunStatus = "running"
 	ReviewRunDone    ReviewRunStatus = "done"
 	ReviewRunFailed  ReviewRunStatus = "failed"
+	ReviewRunSkipped ReviewRunStatus = "skipped"
 )
 
 // ReviewRun records one agent's attempt to review a PR head.
@@ -453,6 +465,7 @@ type CodexRunner interface {
 
 // GiteaClient talks to the Gitea REST API.
 type GiteaClient interface {
+	GetPullRequestStatus(ctx context.Context, pr PRRef) (PullRequestStatus, error)
 	GetDiff(ctx context.Context, pr PRRef) (DiffMap, error)
 	PostReview(ctx context.Context, pr PRRef, commitID string, event ReviewEventType, body string, comments []ReviewComment) (reviewID int64, err error)
 	PostComment(ctx context.Context, pr PRRef, body string) (commentID int64, err error)

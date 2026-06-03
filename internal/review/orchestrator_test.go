@@ -244,13 +244,24 @@ type fakeGitea struct {
 	posted       []string
 	reviewID     int64
 	reviews      []model.ReviewEventType
+	prStatus     model.PullRequestStatus
+	postErr      error
 }
 
+func (g *fakeGitea) GetPullRequestStatus(context.Context, model.PRRef) (model.PullRequestStatus, error) {
+	if g.prStatus.State == "" && !g.prStatus.Merged {
+		return model.PullRequestStatus{State: "open"}, nil
+	}
+	return g.prStatus, nil
+}
 func (g *fakeGitea) GetDiff(context.Context, model.PRRef) (model.DiffMap, error) {
 	g.diffCalls++
 	return g.diff, nil
 }
 func (g *fakeGitea) PostReview(_ context.Context, _ model.PRRef, _ string, ev model.ReviewEventType, _ string, cs []model.ReviewComment) (int64, error) {
+	if g.postErr != nil {
+		return 0, g.postErr
+	}
 	g.lastEvent = ev
 	g.lastComments = cs
 	g.reviews = append(g.reviews, ev)
@@ -357,6 +368,60 @@ func TestReview_TwoReviewersSharePreparedWorktreeAndDiff(t *testing.T) {
 	}
 	if gt.reviews[1] != model.ReviewEventRequestChanges {
 		t.Fatalf("claude review event = %s, want REQUEST_CHANGES", gt.reviews[1])
+	}
+}
+
+func TestReview_SkipsWhenPullRequestAlreadyClosed(t *testing.T) {
+	st := newFakeStore()
+	gc := &fakeCache{}
+	cx := &fakeCodex{result: &model.ReviewResult{Summary: "unused", OverallSeverity: model.Severity("none")}}
+	gt := &fakeGitea{prStatus: model.PullRequestStatus{State: "closed"}}
+	o := &Orchestrator{Store: st, Cache: gc, Reviewers: []model.Reviewer{cx}, Gitea: gt}
+
+	if err := o.Process(context.Background(), prEvent("opened", "aaa111")); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if gc.prepared != 0 {
+		t.Fatalf("Prepare calls = %d, want 0", gc.prepared)
+	}
+	if cx.lastIn.Worktree != "" {
+		t.Fatalf("reviewer was invoked for closed PR: %+v", cx.lastIn)
+	}
+	if len(gt.reviews) != 0 {
+		t.Fatalf("posted reviews = %d, want 0", len(gt.reviews))
+	}
+}
+
+func TestReview_ClosedDuringPostStopsRemainingReviewers(t *testing.T) {
+	st := newFakeStore()
+	gc := &fakeCache{}
+	codexReviewer := &fakeCodex{name: "codex", result: &model.ReviewResult{
+		Summary: "codex found", OverallSeverity: model.SeverityHigh, SessionID: "codex-thread",
+		Findings: []model.Finding{{
+			Path: "calc.go", Line: 19, Side: model.SideNew,
+			Severity: model.SeverityHigh, Title: "bad math", Body: "boom",
+		}},
+	}}
+	claudeReviewer := &fakeCodex{name: "claude", result: &model.ReviewResult{
+		Summary: "claude should not run", OverallSeverity: model.Severity("none"),
+	}}
+	gt := &fakeGitea{
+		diff:    diffWith("calc.go", 19),
+		postErr: errors.New(`gitea: POST /api/v1/repos/alice/repo/pulls/7/reviews: status 422: {"message":"can't submit review for a closed or merged PR"}`),
+	}
+	o := &Orchestrator{Store: st, Cache: gc, Reviewers: []model.Reviewer{codexReviewer, claudeReviewer}, Gitea: gt}
+
+	if err := o.Process(context.Background(), prEvent("opened", "aaa111")); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if codexReviewer.lastIn.Worktree == "" {
+		t.Fatal("codex reviewer was not invoked")
+	}
+	if claudeReviewer.lastIn.Worktree != "" {
+		t.Fatalf("claude reviewer should not run after closed PR post failure: %+v", claudeReviewer.lastIn)
+	}
+	if len(gt.reviews) != 0 {
+		t.Fatalf("posted reviews = %d, want 0", len(gt.reviews))
 	}
 }
 
