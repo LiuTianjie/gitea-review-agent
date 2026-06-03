@@ -49,7 +49,7 @@ status" button to catch a stale token early.
 
 Pushing to `main` (or a `v*` tag) runs `.github/workflows/build-image.yml`, which
 tests, then builds a **multi-arch (amd64 + arm64)** image and pushes it to
-`ghcr.io/<owner>/codex-gitea`. On Sealos, deploy that image and mount the four
+`ghcr.io/<owner>/gitea-review-agent`. On Sealos, deploy that image and mount the six
 volumes below. Make the GHCR package public, or add registry credentials in Sealos.
 
 ### Local (docker compose)
@@ -60,7 +60,8 @@ docker compose up -d
 ```
 
 Volumes: `/data` (sqlite), `/cache` (mirrors), `/work` (worktrees),
-`/codex-home` (codex auth + sessions, **writable**).
+`/codex-home` (codex auth + sessions, **writable**), `/claude-home`
+(Claude Code state), and `/cc-switch` (provider/proxy config).
 
 ## First-run checklist
 
