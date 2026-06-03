@@ -15,6 +15,9 @@ const reviewQualityInstruction = `Review process:
 - Look for repository review guidance before judging findings. Read any present files that are relevant, such as ` + "`AGENTS.md`, `CLAUDE.md`, `CODE_REVIEW.md`, `CODING_STANDARDS.md`, `.github/copilot-instructions.md`, `.github/instructions/**/*.instructions.md`, `.coderabbit.yaml`, `.greptile/*`, `.cursorrules`" + `. Apply path-specific instructions only to matching files.
 - Treat generated output, lock files, vendored dependencies, and build artifacts as low-value review targets unless the PR changes behavior through them or repository instructions explicitly include them.
 - Prioritize correctness regressions, security/auth/input validation, API and data-contract breaks, persistence/migration compatibility, concurrency or async lifecycle bugs, resource leaks, error handling, and edge cases.
+- This is not a top-N review. Continue until every changed file and its relevant call paths have been checked.
+- Report every concrete PR-caused risk you can substantiate, including low and medium severity issues. Do not stop after finding the first high-impact issue.
+- If a changed file looks safe, still consider whether its callers, migrations, API consumers, or persisted data contracts make the change risky.
 - Do not report pure style, readability, naming, formatting, or speculative maintainability feedback unless it creates a concrete bug risk or violates explicit repository instructions.
 - Before returning JSON, verify every candidate finding has a concrete failure mode, is introduced or exposed by this PR, is not a duplicate, points to the best available line, and gives enough detail for a developer to fix it. Omit anything that fails this check.`
 

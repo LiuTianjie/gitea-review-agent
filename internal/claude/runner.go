@@ -16,7 +16,7 @@ import (
 )
 
 const defaultTimeout = 30 * time.Minute
-const readOnlyTools = "Read,Grep,Glob"
+const readOnlyTools = "Read,Grep,Glob,Bash(git diff:*),Bash(git show:*),Bash(git status:*),Bash(git ls-files:*)"
 
 //go:embed findings.schema.json
 var findingsSchema []byte
@@ -313,7 +313,12 @@ Hard rules:
 - Do NOT build, run, compile, or test the code.
 - Do NOT modify any files.
 - Only read-only inspection commands are allowed.
+- Use the allowed read-only tools to inspect the diff and relevant surrounding code; do not rely on filenames alone.
 - Report only risks introduced or exposed by this PR.
+- This is not a top-N review. Continue until every changed file and its relevant call paths have been checked.
+- Report every concrete PR-caused risk you can substantiate, including low and medium severity issues. Do not stop after finding the first high-impact issue.
+- If a changed file looks safe, still consider whether its callers, migrations, API consumers, or persisted data contracts make the change risky.
+- Do not report pure style, readability, naming, formatting, or speculative maintainability feedback unless it creates a concrete bug risk.
 - Write all human-facing output in Simplified Chinese by default.
 - For every finding include path, line, side, severity, title, body, and a tags array with zero to six short free-form tags.
 - Include resolved_fingerprints for prior findings that are clearly fixed.

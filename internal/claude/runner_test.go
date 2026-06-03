@@ -77,6 +77,8 @@ func TestRunnerReview(t *testing.T) {
 		"--json-schema",
 		"--permission-mode",
 		"--allowedTools",
+		"Bash(git diff:*)",
+		"not a top-N review",
 		"--model",
 		"sonnet",
 		"git diff main...HEAD",
@@ -90,11 +92,11 @@ func TestRunnerReview(t *testing.T) {
 			t.Fatalf("log missing %q:\n%s", want, log)
 		}
 	}
-	if strings.Contains(log, "Bash(") {
-		t.Fatalf("review should not allow shell tools:\n%s", log)
+	if strings.Contains(log, "Bash(*)") {
+		t.Fatalf("review should not allow unrestricted shell tools:\n%s", log)
 	}
-	if !strings.Contains(log, "Read,Grep,Glob") {
-		t.Fatalf("review should allow only read-only tools:\n%s", log)
+	if !strings.Contains(log, "Read,Grep,Glob,Bash(git diff:*),Bash(git show:*),Bash(git status:*),Bash(git ls-files:*)") {
+		t.Fatalf("review should allow only read-only inspection tools:\n%s", log)
 	}
 }
 

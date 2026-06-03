@@ -159,6 +159,7 @@ func TestRunner_ReviewNew(t *testing.T) {
 		"Write all human-facing review output in Simplified Chinese",
 		"git diff --name-only <base>...HEAD",
 		".github/copilot-instructions.md",
+		"not a top-N review",
 		"concrete failure mode",
 	} {
 		if !strings.Contains(log, want) {
