@@ -578,6 +578,36 @@ func TestAnalysisReports(t *testing.T) {
 	}
 }
 
+func TestBuildAnalysisSummaryToleratesLegacyNullFindingFields(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	pr := model.PRRef{Owner: "acme", Repo: "widgets", Number: 22}
+	if err := st.UpsertPull(ctx, &model.PullState{PR: pr, HeadSHA: "sha0"}); err != nil {
+		t.Fatalf("UpsertPull: %v", err)
+	}
+	pull, err := st.GetPull(ctx, pr)
+	if err != nil {
+		t.Fatalf("GetPull: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx,
+		`INSERT INTO findings(pull_id,agent,fingerprint,path,line,severity,title,status,tags)
+		 VALUES(?,?,?,?,?,?,?,?,?)`,
+		pull.ID, "codex", "legacy:nulls", nil, nil, nil, nil, nil, nil); err != nil {
+		t.Fatalf("insert legacy finding: %v", err)
+	}
+	summary, err := st.BuildAnalysisSummary(ctx)
+	if err != nil {
+		t.Fatalf("BuildAnalysisSummary: %v", err)
+	}
+	if summary.TotalFindings != 1 || summary.BySeverity["info"] != 1 || summary.ByStatus["open"] != 1 {
+		t.Fatalf("summary mismatch: %+v", summary)
+	}
+	if len(summary.RecentSevere) != 0 {
+		t.Fatalf("legacy info finding should not be recent severe: %+v", summary.RecentSevere)
+	}
+}
+
 func TestSettingsRoundtrip(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()

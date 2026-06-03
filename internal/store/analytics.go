@@ -133,7 +133,8 @@ func (s *Store) fillReviewRunSummary(ctx context.Context, summary *model.Analysi
 
 func (s *Store) fillFindingSummary(ctx context.Context, summary *model.AnalysisSummary) error {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT COALESCE(agent,'codex'), fingerprint, path, line, severity, title,
+		`SELECT COALESCE(agent,'codex'), COALESCE(fingerprint,''), COALESCE(path,''), COALESCE(line,0),
+		        COALESCE(severity,'info'), COALESCE(title,''),
 		        COALESCE(status,'open'), COALESCE(last_seen_sha,''), COALESCE(tags,'')
 		 FROM findings ORDER BY id DESC`)
 	if err != nil {
