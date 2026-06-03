@@ -10,7 +10,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["path", "line", "side", "severity", "title", "body"],
+        "required": ["path", "line", "side", "severity", "title", "body", "tags"],
         "properties": {
           "path": { "type": "string" },
           "line": { "type": "integer" },

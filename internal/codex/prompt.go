@@ -49,7 +49,7 @@ For every concrete problem you find, emit a structured finding with:
 - severity: one of info, low, medium, high, critical.
 - title: a short one-line summary of the issue.
 - body: a clear explanation of the problem and why it matters.
-- tags: zero to six short free-form issue tags, such as "auth", "migration", "concurrency", "data-loss", or "error-handling".
+- tags: zero to six short free-form issue tags, such as "auth", "migration", "concurrency", "data-loss", or "error-handling"; always include this field, using an empty array when there are no tags.
 
 Also produce:
 - summary: an overall summary of the review.
@@ -92,7 +92,7 @@ Compare against your previous review:
 - For prior findings that are still valid or uncertain, include them in findings again.
 - For prior findings that are clearly fixed, do NOT include them in findings; instead include their fingerprint in resolved_fingerprints and mention in the summary that they were resolved.
 - Report any remaining or newly introduced issues as fresh structured findings (path, line, side, severity, title, body).
-- Include zero to six short free-form tags per finding to support aggregate reporting.
+- Include a tags array on every finding, with zero to six short free-form tags to support aggregate reporting.
 - Update overall_severity to reflect the current state (use "none" when no issues remain).
 
 Return ONLY the structured JSON result conforming to the provided output schema.`, baseRef)

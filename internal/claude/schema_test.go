@@ -1,4 +1,4 @@
-package codex
+package claude
 
 import (
 	"encoding/json"

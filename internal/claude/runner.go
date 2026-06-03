@@ -315,7 +315,7 @@ Hard rules:
 - Only read-only inspection commands are allowed.
 - Report only risks introduced or exposed by this PR.
 - Write all human-facing output in Simplified Chinese by default.
-- For every finding include path, line, side, severity, title, body, and zero to six short free-form tags.
+- For every finding include path, line, side, severity, title, body, and a tags array with zero to six short free-form tags.
 - Include resolved_fingerprints for prior findings that are clearly fixed.
 
 Return ONLY JSON conforming to the provided schema.`, verb, baseRef)
