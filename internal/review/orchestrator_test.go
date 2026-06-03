@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +20,8 @@ type fakeStore struct {
 	storedFindings map[int64][]model.StoredFinding
 	fixed          map[int64][]string
 	lastRev        map[string]int64
+	reviewRuns     []model.ReviewRun
+	reviewerStates map[string]*model.PullReviewerState
 }
 
 func newFakeStore() *fakeStore {
@@ -28,10 +31,12 @@ func newFakeStore() *fakeStore {
 		storedFindings: map[int64][]model.StoredFinding{},
 		fixed:          map[int64][]string{},
 		lastRev:        map[string]int64{},
+		reviewerStates: map[string]*model.PullReviewerState{},
 	}
 }
 
-func pk(pr model.PRRef) string { return pr.Key() }
+func pk(pr model.PRRef) string                { return pr.Key() }
+func rpk(pr model.PRRef, agent string) string { return pr.Key() + ":" + agent }
 
 func (s *fakeStore) GetPull(_ context.Context, pr model.PRRef) (*model.PullState, error) {
 	s.mu.Lock()
@@ -77,7 +82,54 @@ func (s *fakeStore) SetLastReview(_ context.Context, pr model.PRRef, id int64) e
 	return nil
 }
 
-func (s *fakeStore) SaveFindings(_ context.Context, pullID int64, _ string, fs []model.Finding) error {
+func (s *fakeStore) GetReviewerState(_ context.Context, pr model.PRRef, agent string) (*model.PullReviewerState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st, ok := s.reviewerStates[rpk(pr, agent)]; ok {
+		cp := *st
+		return &cp, nil
+	}
+	if st, ok := s.pulls[pk(pr)]; ok {
+		return &model.PullReviewerState{
+			ID: st.ID, PullID: st.ID, PR: pr, Agent: agent,
+			SessionID: st.SessionID, HeadSHA: st.HeadSHA, BaseRef: st.BaseRef, LastReviewID: st.LastReviewID,
+		}, nil
+	}
+	return nil, nil
+}
+
+func (s *fakeStore) UpsertReviewerState(_ context.Context, st *model.PullReviewerState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := &model.PullState{
+		ID: st.PullID, PR: st.PR, SessionID: st.SessionID, HeadSHA: st.HeadSHA,
+		BaseRef: st.BaseRef, LastReviewID: st.LastReviewID,
+	}
+	if cp.ID == 0 {
+		cp.ID = int64(len(s.pulls) + 1)
+	}
+	rs := *st
+	rs.PullID = cp.ID
+	s.reviewerStates[rpk(st.PR, st.Agent)] = &rs
+	if st.Agent == "" || st.Agent == "codex" {
+		s.pulls[pk(st.PR)] = cp
+	}
+	return nil
+}
+
+func (s *fakeStore) CreateReviewRun(_ context.Context, run *model.ReviewRun) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run.ID = int64(len(s.reviewRuns) + 1)
+	s.reviewRuns = append(s.reviewRuns, *run)
+	return nil
+}
+
+func (s *fakeStore) FinishReviewRun(context.Context, int64, model.ReviewRunStatus, string, int) error {
+	return nil
+}
+
+func (s *fakeStore) SaveFindings(_ context.Context, pullID int64, _ string, fs []model.Finding, _ model.FindingSaveOptions) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.findings[pullID] = fs
@@ -133,7 +185,19 @@ func (s *fakeStore) MarkFindingPosted(context.Context, int64, int64, int64) erro
 func (s *fakeStore) GetSetting(context.Context, string) (string, bool, error)     { return "", false, nil }
 func (s *fakeStore) SetSetting(context.Context, string, string, bool) error       { return nil }
 func (s *fakeStore) AllSettings(context.Context) (map[string]string, error)       { return nil, nil }
-func (s *fakeStore) Close() error                                                 { return nil }
+func (s *fakeStore) CreateAnalysisReport(context.Context, model.AnalysisSummary) (*model.AnalysisReport, error) {
+	return nil, nil
+}
+func (s *fakeStore) LatestAnalysisReport(context.Context) (*model.AnalysisReport, error) {
+	return nil, nil
+}
+func (s *fakeStore) ListAnalysisReports(context.Context, int) ([]model.AnalysisReport, error) {
+	return nil, nil
+}
+func (s *fakeStore) BuildAnalysisSummary(context.Context) (model.AnalysisSummary, error) {
+	return model.AnalysisSummary{}, nil
+}
+func (s *fakeStore) Close() error { return nil }
 
 type fakeCache struct{ prepared, cleaned int }
 
@@ -144,14 +208,25 @@ func (c *fakeCache) Prepare(_ context.Context, _ model.PRRef, _, _, _, _ string)
 func (c *fakeCache) Cleanup(model.PRRef) error { c.cleaned++; return nil }
 
 type fakeCodex struct {
+	name     string
 	result   *model.ReviewResult
+	err      error
 	lastIn   model.CodexInput
 	askReply string
 	lastAsk  string
 }
 
+func (c *fakeCodex) Name() string {
+	if c.name != "" {
+		return c.name
+	}
+	return "codex"
+}
 func (c *fakeCodex) Review(_ context.Context, in model.CodexInput) (*model.ReviewResult, error) {
 	c.lastIn = in
+	if c.err != nil {
+		return nil, c.err
+	}
 	return c.result, nil
 }
 func (c *fakeCodex) Ask(_ context.Context, _, _, q string) (string, error) {
@@ -162,19 +237,23 @@ func (c *fakeCodex) Status(context.Context) (string, error) { return "ok", nil }
 
 type fakeGitea struct {
 	diff         model.DiffMap
+	diffCalls    int
 	lastEvent    model.ReviewEventType
 	lastComments []model.ReviewComment
 	dismissed    []int64
 	posted       []string
 	reviewID     int64
+	reviews      []model.ReviewEventType
 }
 
 func (g *fakeGitea) GetDiff(context.Context, model.PRRef) (model.DiffMap, error) {
+	g.diffCalls++
 	return g.diff, nil
 }
 func (g *fakeGitea) PostReview(_ context.Context, _ model.PRRef, _ string, ev model.ReviewEventType, _ string, cs []model.ReviewComment) (int64, error) {
 	g.lastEvent = ev
 	g.lastComments = cs
+	g.reviews = append(g.reviews, ev)
 	g.reviewID++
 	return g.reviewID, nil
 }
@@ -225,7 +304,7 @@ func TestReview_Opened_InlineAndRequestChanges(t *testing.T) {
 		},
 	}}
 	gt := &fakeGitea{diff: diffWith("calc.go", 19)}
-	o := &Orchestrator{Store: st, Cache: gc, Codex: cx, Gitea: gt}
+	o := &Orchestrator{Store: st, Cache: gc, Reviewers: []model.Reviewer{cx}, Gitea: gt}
 
 	if err := o.Process(context.Background(), prEvent("opened", "aaa111")); err != nil {
 		t.Fatalf("Process: %v", err)
@@ -245,6 +324,65 @@ func TestReview_Opened_InlineAndRequestChanges(t *testing.T) {
 	}
 }
 
+func TestReview_TwoReviewersSharePreparedWorktreeAndDiff(t *testing.T) {
+	st := newFakeStore()
+	gc := &fakeCache{}
+	codexReviewer := &fakeCodex{name: "codex", result: &model.ReviewResult{
+		Summary: "codex ok", OverallSeverity: model.Severity("none"), SessionID: "codex-thread",
+	}}
+	claudeReviewer := &fakeCodex{name: "claude", result: &model.ReviewResult{
+		Summary: "claude found", OverallSeverity: model.SeverityHigh, SessionID: "claude-thread",
+		Findings: []model.Finding{{
+			Path: "calc.go", Line: 19, Side: model.SideNew,
+			Severity: model.SeverityHigh, Title: "bad math", Body: "boom",
+		}},
+	}}
+	gt := &fakeGitea{diff: diffWith("calc.go", 19)}
+	o := &Orchestrator{Store: st, Cache: gc, Reviewers: []model.Reviewer{codexReviewer, claudeReviewer}, Gitea: gt}
+
+	if err := o.Process(context.Background(), prEvent("opened", "aaa111")); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if gc.prepared != 1 {
+		t.Fatalf("Prepare calls = %d, want 1", gc.prepared)
+	}
+	if gt.diffCalls != 1 {
+		t.Fatalf("GetDiff calls = %d, want 1", gt.diffCalls)
+	}
+	if codexReviewer.lastIn.Worktree == "" || codexReviewer.lastIn.Worktree != claudeReviewer.lastIn.Worktree {
+		t.Fatalf("reviewers did not share worktree: codex=%q claude=%q", codexReviewer.lastIn.Worktree, claudeReviewer.lastIn.Worktree)
+	}
+	if len(gt.reviews) != 2 {
+		t.Fatalf("posted reviews = %d, want 2", len(gt.reviews))
+	}
+	if gt.reviews[1] != model.ReviewEventRequestChanges {
+		t.Fatalf("claude review event = %s, want REQUEST_CHANGES", gt.reviews[1])
+	}
+}
+
+func TestReview_OneReviewerFailureDoesNotFailJobWhenAnotherSucceeds(t *testing.T) {
+	st := newFakeStore()
+	failing := &fakeCodex{name: "claude", err: errors.New("relay unavailable")}
+	working := &fakeCodex{name: "codex", result: &model.ReviewResult{
+		Summary: "codex ok", OverallSeverity: model.Severity("none"), SessionID: "codex-thread",
+	}}
+	gt := &fakeGitea{diff: diffWith("calc.go", 19)}
+	o := &Orchestrator{
+		Store: st, Cache: &fakeCache{},
+		Reviewers: []model.Reviewer{failing, working}, Gitea: gt,
+	}
+
+	if err := o.Process(context.Background(), prEvent("opened", "aaa111")); err != nil {
+		t.Fatalf("Process should not fail when one reviewer succeeds: %v", err)
+	}
+	if len(gt.reviews) != 1 {
+		t.Fatalf("posted reviews = %d, want 1 successful reviewer review", len(gt.reviews))
+	}
+	if len(st.reviewRuns) != 2 {
+		t.Fatalf("review runs = %d, want 2", len(st.reviewRuns))
+	}
+}
+
 func TestReview_Synchronized_ResumesAndDismisses(t *testing.T) {
 	st := newFakeStore()
 	// seed prior review state
@@ -257,7 +395,7 @@ func TestReview_Synchronized_ResumesAndDismisses(t *testing.T) {
 		Summary: "rechecked", OverallSeverity: model.SeverityLow, SessionID: "thread-1",
 	}}
 	gt := &fakeGitea{diff: diffWith("calc.go", 19)}
-	o := &Orchestrator{Store: st, Cache: gc, Codex: cx, Gitea: gt}
+	o := &Orchestrator{Store: st, Cache: gc, Reviewers: []model.Reviewer{cx}, Gitea: gt}
 
 	if err := o.Process(context.Background(), prEvent("synchronized", "new222")); err != nil {
 		t.Fatalf("Process: %v", err)
@@ -294,7 +432,7 @@ func TestReview_Synchronized_CarriesForwardPriorOpenFindings(t *testing.T) {
 		Summary: "rechecked", OverallSeverity: model.Severity("none"), SessionID: "thread-1",
 	}}
 	gt := &fakeGitea{diff: diffWith("calc.go", 19)}
-	o := &Orchestrator{Store: st, Cache: &fakeCache{}, Codex: cx, Gitea: gt}
+	o := &Orchestrator{Store: st, Cache: &fakeCache{}, Reviewers: []model.Reviewer{cx}, Gitea: gt}
 
 	if err := o.Process(context.Background(), prEvent("synchronized", "new222")); err != nil {
 		t.Fatalf("Process: %v", err)
@@ -332,7 +470,7 @@ func TestReview_Synchronized_MarksExplicitlyResolvedPriorFindingsFixed(t *testin
 		ResolvedFingerprints: []string{fp},
 	}}
 	gt := &fakeGitea{diff: diffWith("calc.go", 19)}
-	o := &Orchestrator{Store: st, Cache: &fakeCache{}, Codex: cx, Gitea: gt}
+	o := &Orchestrator{Store: st, Cache: &fakeCache{}, Reviewers: []model.Reviewer{cx}, Gitea: gt}
 
 	if err := o.Process(context.Background(), prEvent("synchronized", "new222")); err != nil {
 		t.Fatalf("Process: %v", err)
@@ -343,8 +481,41 @@ func TestReview_Synchronized_MarksExplicitlyResolvedPriorFindingsFixed(t *testin
 	if len(gt.lastComments) != 0 {
 		t.Fatalf("resolved finding should not be posted inline: %+v", gt.lastComments)
 	}
-	if got := st.fixed[1]; len(got) != 1 || got[0] != fp {
+	if got := st.fixed[1]; len(got) == 0 || !stringSet(got)[fp] {
 		t.Fatalf("resolved fingerprint not marked fixed: %v", got)
+	}
+}
+
+func TestReview_Synchronized_NormalizesUnprefixedResolvedFingerprint(t *testing.T) {
+	st := newFakeStore()
+	pr := model.PRRef{Owner: "alice", Repo: "repo", Number: 7}
+	st.pulls["alice__repo"] = &model.PullState{
+		ID: 1, PR: pr, SessionID: "thread-1", HeadSHA: "old999", BaseRef: "main", LastReviewID: 42,
+	}
+	prior := model.Finding{
+		Path: "calc.go", Line: 19, Side: model.SideNew,
+		Severity: model.SeverityHigh, Title: "div by zero", Body: "boom",
+	}
+	rawFP := prior.Fingerprint()
+	prefixedFP := "codex:" + rawFP
+	st.storedFindings[1] = []model.StoredFinding{{
+		Finding: prior, ID: 10, PullID: 1, Fingerprint: prefixedFP, FirstSeenSHA: "old999", Status: "open",
+	}}
+	cx := &fakeCodex{result: &model.ReviewResult{
+		Summary: "fixed", OverallSeverity: model.Severity("none"), SessionID: "thread-1",
+		ResolvedFingerprints: []string{rawFP},
+	}}
+	gt := &fakeGitea{diff: diffWith("calc.go", 19)}
+	o := &Orchestrator{Store: st, Cache: &fakeCache{}, Reviewers: []model.Reviewer{cx}, Gitea: gt}
+
+	if err := o.Process(context.Background(), prEvent("synchronized", "new222")); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if len(gt.lastComments) != 0 {
+		t.Fatalf("resolved finding should not be carried forward inline: %+v", gt.lastComments)
+	}
+	if got := st.fixed[1]; len(got) == 0 || !stringSet(got)[prefixedFP] {
+		t.Fatalf("resolved fingerprint not normalized to prefixed value: %v", got)
 	}
 }
 
@@ -357,7 +528,7 @@ func TestReview_CommentTrigger_ResumesAndAnswers(t *testing.T) {
 	cx := &fakeCodex{askReply: "Yes, that fixes it."}
 	gt := &fakeGitea{}
 	o := &Orchestrator{
-		Store: st, Cache: &fakeCache{}, Codex: cx, Gitea: gt,
+		Store: st, Cache: &fakeCache{}, Reviewers: []model.Reviewer{cx}, Gitea: gt,
 		TriggerKeywords: []string{"/review"},
 	}
 
@@ -383,7 +554,7 @@ func TestReview_CommentTrigger_NoSession(t *testing.T) {
 	st := newFakeStore() // no prior pull
 	gt := &fakeGitea{}
 	o := &Orchestrator{
-		Store: st, Cache: &fakeCache{}, Codex: &fakeCodex{}, Gitea: gt,
+		Store: st, Cache: &fakeCache{}, Reviewers: []model.Reviewer{&fakeCodex{}}, Gitea: gt,
 		TriggerKeywords: []string{"/review"},
 	}
 	ev := model.WebhookEvent{
@@ -404,7 +575,7 @@ func TestReview_RepoAllowlist(t *testing.T) {
 	gt := &fakeGitea{diff: diffWith("x", 1)}
 	o := &Orchestrator{
 		Store: newFakeStore(), Cache: &fakeCache{},
-		Codex: &fakeCodex{result: &model.ReviewResult{}}, Gitea: gt,
+		Reviewers: []model.Reviewer{&fakeCodex{result: &model.ReviewResult{}}}, Gitea: gt,
 		RepoAllowlist: []string{"someone/else"},
 	}
 	if err := o.Process(context.Background(), prEvent("opened", "h")); err != nil {

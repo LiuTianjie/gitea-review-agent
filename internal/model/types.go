@@ -121,6 +121,7 @@ type Finding struct {
 	Severity Severity `json:"severity"`
 	Title    string   `json:"title"`
 	Body     string   `json:"body"`
+	Tags     []string `json:"tags,omitempty"`
 }
 
 // Fingerprint is a stable hash key for dedup across re-reviews.
@@ -157,16 +158,63 @@ type PullState struct {
 	UpdatedAt    time.Time
 }
 
+// PullReviewerState is the persisted per-agent state for a PR.
+type PullReviewerState struct {
+	ID           int64
+	PullID       int64
+	PR           PRRef
+	Agent        string
+	SessionID    string
+	HeadSHA      string
+	BaseRef      string
+	LastReviewID int64
+	UpdatedAt    time.Time
+}
+
+// ReviewRunStatus tracks one reviewer invocation.
+type ReviewRunStatus string
+
+const (
+	ReviewRunRunning ReviewRunStatus = "running"
+	ReviewRunDone    ReviewRunStatus = "done"
+	ReviewRunFailed  ReviewRunStatus = "failed"
+)
+
+// ReviewRun records one agent's attempt to review a PR head.
+type ReviewRun struct {
+	ID           int64
+	PullID       int64
+	JobID        int64
+	Agent        string
+	HeadSHA      string
+	Status       ReviewRunStatus
+	Error        string
+	FindingCount int
+	StartedAt    time.Time
+	FinishedAt   *time.Time
+}
+
 // StoredFinding is a Finding with persistence metadata.
 type StoredFinding struct {
 	Finding
 	ID             int64
 	PullID         int64
+	ReviewRunID    int64
+	Agent          string
 	Fingerprint    string
 	GiteaCommentID int64
 	ReviewID       int64
 	FirstSeenSHA   string
+	LastSeenSHA    string
+	MappedInline   bool
 	Status         string // open|fixed
+}
+
+// FindingSaveOptions carries metadata attached to a batch of findings.
+type FindingSaveOptions struct {
+	Agent              string
+	ReviewRunID        int64
+	MappedFingerprints map[string]bool
 }
 
 // ---------- Diff mapping ----------
@@ -256,6 +304,67 @@ type JobStats struct {
 	Superseded   int
 }
 
+// AnalysisReport is a saved snapshot of full-history review/finding analytics.
+type AnalysisReport struct {
+	ID        int64
+	CreatedAt time.Time
+	Summary   AnalysisSummary
+}
+
+type AnalysisSummary struct {
+	TotalReviewRuns      int                     `json:"total_review_runs"`
+	SuccessfulReviewRuns int                     `json:"successful_review_runs"`
+	FailedReviewRuns     int                     `json:"failed_review_runs"`
+	SuccessRate          float64                 `json:"success_rate"`
+	TotalFindings        int                     `json:"total_findings"`
+	OpenFindings         int                     `json:"open_findings"`
+	FixedFindings        int                     `json:"fixed_findings"`
+	HighCriticalOpen     int                     `json:"high_critical_open"`
+	ByAgent              map[string]AgentSummary `json:"by_agent"`
+	BySeverity           map[string]int          `json:"by_severity"`
+	ByStatus             map[string]int          `json:"by_status"`
+	TopTags              []TagSummary            `json:"top_tags"`
+	RepeatedTitles       []TitleSummary          `json:"repeated_titles"`
+	RecentSevere         []SevereFindingSummary  `json:"recent_severe"`
+	AgentOverlap         []AgentOverlapSummary   `json:"agent_overlap"`
+}
+
+type AgentSummary struct {
+	ReviewRuns int `json:"review_runs"`
+	Succeeded  int `json:"succeeded"`
+	Failed     int `json:"failed"`
+	Findings   int `json:"findings"`
+	Open       int `json:"open"`
+}
+
+type TagSummary struct {
+	Tag   string `json:"tag"`
+	Count int    `json:"count"`
+}
+
+type TitleSummary struct {
+	Title string `json:"title"`
+	Count int    `json:"count"`
+}
+
+type SevereFindingSummary struct {
+	Agent       string   `json:"agent"`
+	Severity    Severity `json:"severity"`
+	Title       string   `json:"title"`
+	Path        string   `json:"path"`
+	Line        int      `json:"line"`
+	Status      string   `json:"status"`
+	LastSeenSHA string   `json:"last_seen_sha"`
+}
+
+type AgentOverlapSummary struct {
+	Fingerprint string   `json:"fingerprint"`
+	Title       string   `json:"title"`
+	Path        string   `json:"path"`
+	Line        int      `json:"line"`
+	Agents      []string `json:"agents"`
+}
+
 // ---------- Ports (interfaces) ----------
 
 // Store persists jobs, PR state, findings, and console-editable settings.
@@ -277,12 +386,22 @@ type Store interface {
 	UpsertPull(ctx context.Context, st *PullState) error
 	SetSession(ctx context.Context, pr PRRef, sessionID string) error
 	SetLastReview(ctx context.Context, pr PRRef, reviewID int64) error
+	GetReviewerState(ctx context.Context, pr PRRef, agent string) (*PullReviewerState, error)
+	UpsertReviewerState(ctx context.Context, st *PullReviewerState) error
 
 	// Findings
-	SaveFindings(ctx context.Context, pullID int64, headSHA string, fs []Finding) error
+	CreateReviewRun(ctx context.Context, run *ReviewRun) error
+	FinishReviewRun(ctx context.Context, runID int64, status ReviewRunStatus, errMsg string, findingCount int) error
+	SaveFindings(ctx context.Context, pullID int64, headSHA string, fs []Finding, opts FindingSaveOptions) error
 	MarkFindingsFixed(ctx context.Context, pullID int64, fingerprints []string) error
 	ListFindings(ctx context.Context, pullID int64) ([]StoredFinding, error)
 	MarkFindingPosted(ctx context.Context, findingID, commentID, reviewID int64) error
+
+	// Analytics
+	CreateAnalysisReport(ctx context.Context, summary AnalysisSummary) (*AnalysisReport, error)
+	LatestAnalysisReport(ctx context.Context) (*AnalysisReport, error)
+	ListAnalysisReports(ctx context.Context, limit int) ([]AnalysisReport, error)
+	BuildAnalysisSummary(ctx context.Context) (AnalysisSummary, error)
 
 	// Settings (console-editable runtime config)
 	GetSetting(ctx context.Context, key string) (string, bool, error)
@@ -309,14 +428,20 @@ type CodexInput struct {
 	Note      string // optional extra context (e.g. "head moved A->B, note what's fixed")
 }
 
-// CodexRunner invokes the codex CLI in headless mode.
-type CodexRunner interface {
+// Reviewer invokes a code-review agent in headless mode.
+type Reviewer interface {
+	Name() string
 	// Review runs a structured review (new or resume) and returns findings + session id.
 	Review(ctx context.Context, in CodexInput) (*ReviewResult, error)
 	// Ask resumes a session with a free-form question and returns the text answer.
 	Ask(ctx context.Context, sessionID, worktree, question string) (string, error)
 	// Status reports whether codex auth is currently valid (codex login status).
 	Status(ctx context.Context) (string, error)
+}
+
+// CodexRunner is kept as a compatibility alias for the default reviewer.
+type CodexRunner interface {
+	Reviewer
 }
 
 // GiteaClient talks to the Gitea REST API.

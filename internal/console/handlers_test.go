@@ -248,6 +248,29 @@ func TestPostSettingsSingleKeyForm(t *testing.T) {
 	}
 }
 
+func TestPostSettingsAppliesRuntimeHook(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "console.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	cfg := &config.Config{AdminPassword: testPassword, CodexHome: filepath.Join(t.TempDir(), "codex-home")}
+	var applied map[string]string
+	c := New(st, cfg, cfg.CodexHome, SettingsApplyFunc(func(_ context.Context, updates map[string]string) error {
+		applied = updates
+		return nil
+	}))
+	h := c.Routes()
+
+	w := do(t, h, "POST", "/admin/api/settings", `{"settings":{"claude_enabled":"true","claude_model":"sonnet"}}`, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST settings: status = %d (body=%s)", w.Code, w.Body.String())
+	}
+	if applied["claude_enabled"] != "true" || applied["claude_model"] != "sonnet" {
+		t.Fatalf("runtime hook updates = %+v", applied)
+	}
+}
+
 func TestPostSettingsEmptyRejected(t *testing.T) {
 	c, _ := newTestConsole(t, nil)
 	h := c.Routes()
@@ -373,6 +396,41 @@ func TestJobsEndpoint(t *testing.T) {
 	}
 	if resp.Stats == nil {
 		t.Fatalf("jobs response missing stats")
+	}
+}
+
+func TestAnalyticsReportEndpoints(t *testing.T) {
+	c, _ := newTestConsole(t, nil)
+	h := c.Routes()
+
+	w := do(t, h, "POST", "/admin/api/analytics/reports", "", true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("create report: code = %d body=%s", w.Code, w.Body.String())
+	}
+	var created struct {
+		OK     bool           `json:"ok"`
+		Report map[string]any `json:"report"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create report: %v", err)
+	}
+	if !created.OK || created.Report == nil {
+		t.Fatalf("create report response mismatch: %+v", created)
+	}
+
+	w = do(t, h, "GET", "/admin/api/analytics/reports/latest", "", true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("latest report: code = %d body=%s", w.Code, w.Body.String())
+	}
+	var latest struct {
+		OK     bool           `json:"ok"`
+		Report map[string]any `json:"report"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &latest); err != nil {
+		t.Fatalf("decode latest report: %v", err)
+	}
+	if !latest.OK || latest.Report == nil {
+		t.Fatalf("latest report response mismatch: %+v", latest)
 	}
 }
 

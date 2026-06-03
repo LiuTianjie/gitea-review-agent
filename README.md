@@ -1,6 +1,7 @@
 # codex-gitea
 
-Self-hosted service that auto-reviews Gitea pull requests with the Codex CLI.
+Self-hosted service that auto-reviews Gitea pull requests with the Codex CLI
+and, optionally, Claude Code.
 On each PR event it runs a **static** code review (read-only — never builds, runs,
 or tests your code) and posts the findings back as inline review comments plus a
 summary. Reviews are **stateful**: follow-up pushes and `/review` comments resume
@@ -13,7 +14,7 @@ Gitea webhook ──▶ verify HMAC ──▶ enqueue (SQLite) ──▶ worker 
                                                           │
                                    bare mirror + worktree (incremental fetch)
                                                           │
-                              codex exec (read-only, --output-schema)
+                              codex exec / claude --print (shared checkout)
                                                           │
                               map findings to diff lines ──▶ Gitea review API
 ```
@@ -25,6 +26,11 @@ Gitea webhook ──▶ verify HMAC ──▶ enqueue (SQLite) ──▶ worker 
   delta, then check out a deterministic worktree. Big repos stay fast.
 - **Read-only** — codex runs with `sandbox_mode=read-only` + `approval_policy=never`.
   It reviews the diff and never executes repo code.
+- **Optional Claude reviewer** — set `CLAUDE_ENABLED=true` to post a second,
+  independent Claude review. Codex and Claude share the same prepared worktree
+  and diff for a job; one reviewer failing does not block the other.
+- **On-demand analytics** — the admin console can generate saved full-history
+  analysis reports for findings, severities, tags, agent results, and overlap.
 
 ## Auth: authfile (default) vs apikey
 
@@ -86,6 +92,12 @@ Env vars (all optional except `ADMIN_PASSWORD`; the console can set the rest):
 | `CODEX_AUTH_MODE` | `authfile` | or `apikey` |
 | `CODEX_API_KEY` | — | apikey mode only (separately billed) |
 | `CODEX_SANDBOX_MODE` | `read-only` | set `danger-full-access` only when the container blocks Codex's read-only sandbox |
+| `CLAUDE_ENABLED` | `false` | enable the Claude reviewer |
+| `CLAUDE_MODEL` | `sonnet` | Claude model/alias passed to Claude Code |
+| `CLAUDE_API_KEY` | — | optional Anthropic or relay key; configurable in console |
+| `CLAUDE_BASE_URL` | — | optional Anthropic-compatible relay URL; configurable in console |
+| `CC_SWITCH_CONFIG_DIR` | `/cc-switch` | cc-switch provider/proxy config directory |
+| `CC_SWITCH_PROVIDER_ID` | — | optional provider id to switch before Claude runs |
 | `CONCURRENCY` | `2` | worker count |
 | `TRIGGER_KEYWORDS` | `/review,@review` | comma-separated |
 | `REPO_ALLOWLIST` | — | comma-separated `owner/repo`; empty = all |

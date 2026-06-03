@@ -15,6 +15,13 @@ services:
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
       MODEL: ${MODEL:-gpt-5-codex}
       CODEX_AUTH_MODE: ${CODEX_AUTH_MODE:-authfile}
+      CLAUDE_ENABLED: ${CLAUDE_ENABLED:-false}
+      CLAUDE_MODEL: ${CLAUDE_MODEL:-sonnet}
+      CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
+      CLAUDE_BASE_URL: ${CLAUDE_BASE_URL:-}
+      CLAUDE_HOME: /claude-home
+      CC_SWITCH_CONFIG_DIR: /cc-switch
+      CC_SWITCH_PROVIDER_ID: ${CC_SWITCH_PROVIDER_ID:-}
       # apikey mode only (separately billed OpenAI Platform key):
       # CODEX_API_KEY: ${CODEX_API_KEY:-}
     volumes:
@@ -22,6 +29,8 @@ services:
       - cache:/cache          # bare git mirrors (incremental fetch)
       - work:/work            # throwaway worktrees
       - codex-home:/codex-home # codex auth.json + sessions (MUST be writable)
+      - claude-home:/claude-home # Claude Code settings/session state
+      - cc-switch:/cc-switch  # cc-switch provider/proxy config
     restart: unless-stopped
 
 volumes:
@@ -29,3 +38,5 @@ volumes:
   cache:
   work:
   codex-home:
+  claude-home:
+  cc-switch:

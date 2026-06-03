@@ -4,6 +4,7 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -13,11 +14,14 @@ import (
 
 // Orchestrator runs a single job through gitcache -> codex -> gitea.
 type Orchestrator struct {
-	Store   model.Store
-	Cache   model.GitCache
-	Codex   model.CodexRunner
-	Gitea   model.GiteaClient
-	BaseRef string // unused; per-PR base comes from the event
+	Store     model.Store
+	Cache     model.GitCache
+	Reviewers []model.Reviewer
+	// ReviewersFunc is used by production wiring so console-updated reviewer
+	// settings take effect for subsequent jobs without restarting the service.
+	ReviewersFunc func() []model.Reviewer
+	Gitea         model.GiteaClient
+	BaseRef       string // unused; per-PR base comes from the event
 
 	TriggerKeywords []string
 	RepoAllowlist   []string // entries "owner/repo"; empty = allow all
@@ -28,6 +32,28 @@ func (o *Orchestrator) logf(format string, args ...any) {
 	if o.Logger != nil {
 		o.Logger.Printf(format, args...)
 	}
+}
+
+func (o *Orchestrator) reviewers() []model.Reviewer {
+	if o.ReviewersFunc != nil {
+		return o.ReviewersFunc()
+	}
+	if len(o.Reviewers) > 0 {
+		return o.Reviewers
+	}
+	return nil
+}
+
+func (o *Orchestrator) primaryReviewer() model.Reviewer {
+	for _, r := range o.reviewers() {
+		if r.Name() == "codex" {
+			return r
+		}
+	}
+	if rs := o.reviewers(); len(rs) > 0 {
+		return rs[0]
+	}
+	return nil
 }
 
 func (o *Orchestrator) jobLog(ctx context.Context, jobID int64, stage, message string) {
@@ -100,24 +126,26 @@ func (o *Orchestrator) handlePR(ctx context.Context, jobID int64, ev *model.Webh
 func (o *Orchestrator) review(ctx context.Context, jobID int64, ev *model.WebhookEvent, isUpdate bool) error {
 	pr := ev.PR
 
-	// Prior state (session continuity).
-	o.jobLog(ctx, jobID, "state", "loading prior PR session")
-	prev, err := o.Store.GetPull(ctx, pr)
+	if len(o.reviewers()) == 0 {
+		return fmt.Errorf("no reviewers configured")
+	}
+
+	o.jobLog(ctx, jobID, "state", "loading PR state")
+	pull, err := o.Store.GetPull(ctx, pr)
 	if err != nil {
 		return fmt.Errorf("get pull: %w", err)
 	}
-	sessionID := ""
-	prevHead := ""
-	var prevReviewID int64
-	var priorOpen []model.StoredFinding
-	if prev != nil {
-		sessionID = prev.SessionID
-		prevHead = prev.HeadSHA
-		prevReviewID = prev.LastReviewID
-		priorOpen, err = o.openFindings(ctx, prev.ID)
-		if err != nil {
-			return err
+	if pull == nil {
+		if err := o.Store.UpsertPull(ctx, &model.PullState{PR: pr, HeadSHA: ev.HeadSHA, BaseRef: ev.BaseRef}); err != nil {
+			return fmt.Errorf("ensure pull: %w", err)
 		}
+		pull, err = o.Store.GetPull(ctx, pr)
+		if err != nil {
+			return fmt.Errorf("get ensured pull: %w", err)
+		}
+	}
+	if pull == nil {
+		return fmt.Errorf("pull state was not created")
 	}
 
 	o.jobLog(ctx, jobID, "git", "preparing worktree")
@@ -139,74 +167,112 @@ func (o *Orchestrator) review(ctx context.Context, jobID int64, ev *model.Webhoo
 	}
 	o.jobLog(ctx, jobID, "gitea", "diff fetched")
 
-	in := model.CodexInput{
-		Worktree: worktree,
-		BaseRef:  ev.BaseRef,
+	var errs []error
+	successes := 0
+	for _, reviewer := range o.reviewers() {
+		if err := o.runReviewer(ctx, jobID, ev, isUpdate, pull.ID, worktree, diff, reviewer); err != nil {
+			errs = append(errs, err)
+			o.jobLog(ctx, jobID, reviewer.Name(), "failed: "+err.Error())
+			continue
+		}
+		successes++
 	}
+	if successes == 0 && len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+func (o *Orchestrator) runReviewer(ctx context.Context, jobID int64, ev *model.WebhookEvent, isUpdate bool, pullID int64, worktree string, diff model.DiffMap, reviewer model.Reviewer) error {
+	pr := ev.PR
+	agent := reviewer.Name()
+	state, err := o.Store.GetReviewerState(ctx, pr, agent)
+	if err != nil {
+		return fmt.Errorf("%s get state: %w", agent, err)
+	}
+	sessionID := ""
+	prevHead := ""
+	var prevReviewID int64
+	if state != nil {
+		sessionID = state.SessionID
+		prevHead = state.HeadSHA
+		prevReviewID = state.LastReviewID
+	}
+	priorOpen, err := o.openFindings(ctx, pullID, agent)
+	if err != nil {
+		return err
+	}
+
+	run := &model.ReviewRun{PullID: pullID, JobID: jobID, Agent: agent, HeadSHA: ev.HeadSHA}
+	if err := o.Store.CreateReviewRun(ctx, run); err != nil {
+		o.logf("create review run: %v", err)
+	}
+
+	in := model.CodexInput{Worktree: worktree, BaseRef: ev.BaseRef}
 	if isUpdate && sessionID != "" {
 		in.SessionID = sessionID
 		in.Note = fmt.Sprintf("PR head 已从 %s 更新到 %s。请基于 %s 重新审查当前 diff，并在摘要中说明之前报告的问题哪些已经修复。", shortSHA(prevHead), shortSHA(ev.HeadSHA), ev.BaseRef)
 	}
 	in.Note = appendPriorFindingsNote(in.Note, priorOpen)
 
-	o.jobLog(ctx, jobID, "codex", "review started")
-	result, err := o.Codex.Review(ctx, in)
+	o.jobLog(ctx, jobID, agent, "review started")
+	result, err := reviewer.Review(ctx, in)
 	if err != nil {
-		return fmt.Errorf("codex review: %w", err)
+		if run.ID != 0 {
+			_ = o.Store.FinishReviewRun(ctx, run.ID, model.ReviewRunFailed, err.Error(), 0)
+		}
+		return fmt.Errorf("%s review: %w", agent, err)
 	}
-	result.Findings = carryForwardFindings(result.Findings, priorOpen, result.ResolvedFingerprints)
+	result.Findings = carryForwardFindings(result.Findings, priorOpen, result.ResolvedFingerprints, agent)
 	result.OverallSeverity = highestSeverity(result.Findings, result.OverallSeverity)
-	o.jobLog(ctx, jobID, "codex", fmt.Sprintf("review finished: %d findings, session=%s", len(result.Findings), result.SessionID))
+	o.jobLog(ctx, jobID, agent, fmt.Sprintf("review finished: %d findings, session=%s", len(result.Findings), result.SessionID))
 
-	// Persist PR state + session id.
-	o.jobLog(ctx, jobID, "state", "saving PR session")
-	st := &model.PullState{PR: pr, SessionID: result.SessionID, HeadSHA: ev.HeadSHA, BaseRef: ev.BaseRef}
-	if st.SessionID == "" {
-		st.SessionID = sessionID // keep prior if codex returned none
-	}
-	if err := o.Store.UpsertPull(ctx, st); err != nil {
-		o.logf("upsert pull: %v", err)
-	}
-	pullRow, _ := o.Store.GetPull(ctx, pr)
-
-	// Map findings to inline comments; fold unmappable ones into the summary.
-	comments, unmapped := mapFindings(diff, result.Findings)
-
-	// Dismiss our previous review so stale comments don't pile up.
+	comments, unmapped, mapped := mapFindings(diff, result.Findings, agent)
 	if isUpdate && prevReviewID != 0 {
-		o.jobLog(ctx, jobID, "gitea", "dismissing previous review")
+		o.jobLog(ctx, jobID, "gitea", fmt.Sprintf("dismissing previous %s review", agent))
 		if err := o.Gitea.DismissReview(ctx, pr, prevReviewID, "新提交触发了重新审查，此前审查已被替代。"); err != nil {
-			o.logf("dismiss prior review %d: %v", prevReviewID, err)
+			o.logf("dismiss prior %s review %d: %v", agent, prevReviewID, err)
 		}
 	}
 
-	body := buildSummary(result, unmapped)
+	body := buildSummary(agent, result, unmapped)
 	event := model.ReviewEventComment
 	if result.OverallSeverity.Blocking() || anyBlocking(result.Findings) {
 		event = model.ReviewEventRequestChanges
 	}
-
-	o.jobLog(ctx, jobID, "gitea", fmt.Sprintf("posting review: %d inline comments, verdict=%s", len(comments), event))
+	o.jobLog(ctx, jobID, "gitea", fmt.Sprintf("posting %s review: %d inline comments, verdict=%s", agent, len(comments), event))
 	reviewID, err := o.Gitea.PostReview(ctx, pr, ev.HeadSHA, event, body, comments)
 	if err != nil {
-		return fmt.Errorf("post review: %w", err)
-	}
-	o.jobLog(ctx, jobID, "gitea", fmt.Sprintf("review posted: id=%d", reviewID))
-
-	if pullRow != nil {
-		if err := o.Store.SaveFindings(ctx, pullRow.ID, ev.HeadSHA, result.Findings); err != nil {
-			o.logf("save findings: %v", err)
+		if run.ID != 0 {
+			_ = o.Store.FinishReviewRun(ctx, run.ID, model.ReviewRunFailed, err.Error(), len(result.Findings))
 		}
-		if err := o.Store.MarkFindingsFixed(ctx, pullRow.ID, resolvedOnly(result.ResolvedFingerprints, result.Findings)); err != nil {
-			o.logf("mark fixed findings: %v", err)
-		}
+		return fmt.Errorf("%s post review: %w", agent, err)
 	}
-	if err := o.Store.SetLastReview(ctx, pr, reviewID); err != nil {
-		o.logf("set last review: %v", err)
-	}
+	o.jobLog(ctx, jobID, "gitea", fmt.Sprintf("%s review posted: id=%d", agent, reviewID))
 
-	o.logf("reviewed %s/%s#%d: %d findings (%d inline), verdict=%s, session=%s",
-		pr.Owner, pr.Repo, pr.Number, len(result.Findings), len(comments), event, result.SessionID)
+	st := &model.PullReviewerState{
+		PR: pr, Agent: agent, SessionID: result.SessionID, HeadSHA: ev.HeadSHA,
+		BaseRef: ev.BaseRef, LastReviewID: reviewID,
+	}
+	if st.SessionID == "" {
+		st.SessionID = sessionID
+	}
+	if err := o.Store.UpsertReviewerState(ctx, st); err != nil {
+		o.logf("upsert %s state: %v", agent, err)
+	}
+	if err := o.Store.SaveFindings(ctx, pullID, ev.HeadSHA, result.Findings, model.FindingSaveOptions{
+		Agent: agent, ReviewRunID: run.ID, MappedFingerprints: mapped,
+	}); err != nil {
+		o.logf("save %s findings: %v", agent, err)
+	}
+	if err := o.Store.MarkFindingsFixed(ctx, pullID, resolvedOnly(result.ResolvedFingerprints, result.Findings, agent)); err != nil {
+		o.logf("mark %s fixed findings: %v", agent, err)
+	}
+	if run.ID != 0 {
+		_ = o.Store.FinishReviewRun(ctx, run.ID, model.ReviewRunDone, "", len(result.Findings))
+	}
+	o.logf("reviewed %s/%s#%d with %s: %d findings (%d inline), verdict=%s, session=%s",
+		pr.Owner, pr.Repo, pr.Number, agent, len(result.Findings), len(comments), event, result.SessionID)
 	return nil
 }
 
@@ -223,7 +289,11 @@ func (o *Orchestrator) handleComment(ctx context.Context, jobID int64, ev *model
 	}
 
 	o.jobLog(ctx, jobID, "state", "loading prior PR session")
-	prev, err := o.Store.GetPull(ctx, ev.PR)
+	reviewer := o.primaryReviewer()
+	if reviewer == nil {
+		return fmt.Errorf("no reviewer configured")
+	}
+	prev, err := o.Store.GetReviewerState(ctx, ev.PR, reviewer.Name())
 	if err != nil {
 		return fmt.Errorf("get pull: %w", err)
 	}
@@ -241,12 +311,12 @@ func (o *Orchestrator) handleComment(ctx context.Context, jobID int64, ev *model
 	defer o.Cache.Cleanup(ev.PR)
 	o.jobLog(ctx, jobID, "git", "worktree ready")
 
-	o.jobLog(ctx, jobID, "codex", "answer started")
-	answer, err := o.Codex.Ask(ctx, prev.SessionID, worktree, question)
+	o.jobLog(ctx, jobID, reviewer.Name(), "answer started")
+	answer, err := reviewer.Ask(ctx, prev.SessionID, worktree, question)
 	if err != nil {
-		return fmt.Errorf("codex ask: %w", err)
+		return fmt.Errorf("%s ask: %w", reviewer.Name(), err)
 	}
-	o.jobLog(ctx, jobID, "codex", "answer finished")
+	o.jobLog(ctx, jobID, reviewer.Name(), "answer finished")
 	o.jobLog(ctx, jobID, "gitea", "posting answer comment")
 	_, err = o.Gitea.PostComment(ctx, ev.PR, answer)
 	return err
@@ -272,14 +342,14 @@ func (o *Orchestrator) matchTrigger(body string) (string, bool) {
 
 // ---------- helpers ----------
 
-func (o *Orchestrator) openFindings(ctx context.Context, pullID int64) ([]model.StoredFinding, error) {
+func (o *Orchestrator) openFindings(ctx context.Context, pullID int64, agent string) ([]model.StoredFinding, error) {
 	stored, err := o.Store.ListFindings(ctx, pullID)
 	if err != nil {
 		return nil, fmt.Errorf("list prior findings: %w", err)
 	}
 	open := make([]model.StoredFinding, 0, len(stored))
 	for _, sf := range stored {
-		if sf.Status == "" || sf.Status == "open" {
+		if (sf.Status == "" || sf.Status == "open") && normalizeAgentName(sf.Agent) == normalizeAgentName(agent) {
 			open = append(open, sf)
 		}
 	}
@@ -328,22 +398,22 @@ func appendPriorFindingsNote(note string, prior []model.StoredFinding) string {
 	return out.String()
 }
 
-func carryForwardFindings(current []model.Finding, prior []model.StoredFinding, resolved []string) []model.Finding {
+func carryForwardFindings(current []model.Finding, prior []model.StoredFinding, resolved []string, agent string) []model.Finding {
 	if len(prior) == 0 {
 		return current
 	}
-	resolvedSet := stringSet(resolved)
+	resolvedSet := fingerprintSet(resolved, agent)
 	seen := make(map[string]bool, len(current))
 	out := make([]model.Finding, 0, len(current)+len(prior))
 	for _, f := range current {
-		fp := f.Fingerprint()
+		fp := effectiveFindingFingerprint(agent, f.Fingerprint())
 		seen[fp] = true
 		out = append(out, f)
 	}
 	for _, sf := range prior {
 		fp := strings.TrimSpace(sf.Fingerprint)
 		if fp == "" {
-			fp = sf.Finding.Fingerprint()
+			fp = effectiveFindingFingerprint(agent, sf.Finding.Fingerprint())
 		}
 		if resolvedSet[fp] || seen[fp] {
 			continue
@@ -394,25 +464,48 @@ func severityRank(s model.Severity) int {
 	}
 }
 
-func resolvedOnly(resolved []string, findings []model.Finding) []string {
+func resolvedOnly(resolved []string, findings []model.Finding, agent string) []string {
 	if len(resolved) == 0 {
 		return nil
 	}
 	current := make(map[string]bool, len(findings))
 	for _, f := range findings {
-		current[f.Fingerprint()] = true
+		current[effectiveFindingFingerprint(agent, f.Fingerprint())] = true
 	}
 	out := make([]string, 0, len(resolved))
 	seen := map[string]bool{}
 	for _, fp := range resolved {
 		fp = strings.TrimSpace(fp)
-		if fp == "" || current[fp] || seen[fp] {
+		if fp == "" {
 			continue
 		}
-		out = append(out, fp)
-		seen[fp] = true
+		candidates := fingerprintCandidates(fp, agent)
+		for _, candidate := range candidates {
+			if current[candidate] || seen[candidate] {
+				continue
+			}
+			out = append(out, candidate)
+			seen[candidate] = true
+		}
 	}
 	return out
+}
+
+func normalizeAgentName(agent string) string {
+	agent = strings.ToLower(strings.TrimSpace(agent))
+	if agent == "" {
+		return "codex"
+	}
+	return agent
+}
+
+func effectiveFindingFingerprint(agent, fp string) string {
+	agent = normalizeAgentName(agent)
+	fp = strings.TrimSpace(fp)
+	if strings.HasPrefix(fp, agent+":") {
+		return fp
+	}
+	return agent + ":" + fp
 }
 
 func stringSet(items []string) map[string]bool {
@@ -426,13 +519,37 @@ func stringSet(items []string) map[string]bool {
 	return out
 }
 
-func mapFindings(diff model.DiffMap, fs []model.Finding) (comments []model.ReviewComment, unmapped []model.Finding) {
+func fingerprintSet(items []string, agent string) map[string]bool {
+	out := map[string]bool{}
+	for _, item := range items {
+		for _, candidate := range fingerprintCandidates(item, agent) {
+			out[candidate] = true
+		}
+	}
+	return out
+}
+
+func fingerprintCandidates(fp, agent string) []string {
+	fp = strings.TrimSpace(fp)
+	if fp == "" {
+		return nil
+	}
+	out := []string{fp}
+	if !strings.Contains(fp, ":") {
+		out = append(out, effectiveFindingFingerprint(agent, fp))
+	}
+	return out
+}
+
+func mapFindings(diff model.DiffMap, fs []model.Finding, agent string) (comments []model.ReviewComment, unmapped []model.Finding, mapped map[string]bool) {
+	mapped = map[string]bool{}
 	for _, f := range fs {
 		newPos, oldPos, ok := diff.Position(f.Path, f.Line, f.Side)
 		if !ok {
 			unmapped = append(unmapped, f)
 			continue
 		}
+		mapped[effectiveFindingFingerprint(agent, f.Fingerprint())] = true
 		comments = append(comments, model.ReviewComment{
 			Path:        f.Path,
 			Body:        formatFinding(f),
@@ -440,16 +557,18 @@ func mapFindings(diff model.DiffMap, fs []model.Finding) (comments []model.Revie
 			OldPosition: oldPos,
 		})
 	}
-	return comments, unmapped
+	return comments, unmapped, mapped
 }
 
 func formatFinding(f model.Finding) string {
 	return fmt.Sprintf("**[%s] %s**\n\n%s", strings.ToUpper(string(f.Severity)), f.Title, f.Body)
 }
 
-func buildSummary(r *model.ReviewResult, unmapped []model.Finding) string {
+func buildSummary(agent string, r *model.ReviewResult, unmapped []model.Finding) string {
 	var b strings.Builder
-	b.WriteString("## Codex 审查\n\n")
+	b.WriteString("## ")
+	b.WriteString(reviewerDisplayName(agent))
+	b.WriteString(" 审查\n\n")
 	b.WriteString(r.Summary)
 	b.WriteString(fmt.Sprintf("\n\n整体严重程度：**%s**\n", r.OverallSeverity))
 	if len(unmapped) > 0 {
@@ -461,6 +580,21 @@ func buildSummary(r *model.ReviewResult, unmapped []model.Finding) string {
 	}
 	b.WriteString("\n_仅静态审查，未构建或执行代码。_")
 	return b.String()
+}
+
+func reviewerDisplayName(agent string) string {
+	switch normalizeAgentName(agent) {
+	case "codex":
+		return "Codex"
+	case "claude":
+		return "Claude"
+	default:
+		name := normalizeAgentName(agent)
+		if name == "" {
+			return "Reviewer"
+		}
+		return strings.ToUpper(name[:1]) + name[1:]
+	}
 }
 
 func anyBlocking(fs []model.Finding) bool {

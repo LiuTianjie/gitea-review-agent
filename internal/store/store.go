@@ -98,10 +98,32 @@ func migrateSchema(db *sql.DB) error {
 	}{
 		{table: "findings", name: "title", def: "TEXT"},
 		{table: "findings", name: "body", def: "TEXT"},
+		{table: "findings", name: "review_run_id", def: "INTEGER"},
+		{table: "findings", name: "agent", def: "TEXT DEFAULT 'codex'"},
+		{table: "findings", name: "last_seen_sha", def: "TEXT"},
+		{table: "findings", name: "mapped_inline", def: "INTEGER DEFAULT 0"},
+		{table: "findings", name: "tags", def: "TEXT"},
 	} {
 		if err := ensureColumn(db, col.table, col.name, col.def); err != nil {
 			return err
 		}
+	}
+	if _, err := db.Exec(`UPDATE findings SET agent='codex' WHERE agent IS NULL OR agent=''`); err != nil {
+		return fmt.Errorf("migrate findings agent: %w", err)
+	}
+	if _, err := db.Exec(`UPDATE findings SET last_seen_sha=first_seen_sha WHERE last_seen_sha IS NULL OR last_seen_sha=''`); err != nil {
+		return fmt.Errorf("migrate findings last_seen_sha: %w", err)
+	}
+	if _, err := db.Exec(`UPDATE findings SET fingerprint='codex:' || fingerprint WHERE fingerprint NOT LIKE '%:%'`); err != nil {
+		return fmt.Errorf("migrate findings fingerprints: %w", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO pull_reviewer_states(pull_id,agent,session_id,head_sha,base_ref,last_review_id,updated_at)
+		SELECT id,'codex',session_id,head_sha,base_ref,last_review_id,updated_at
+		FROM pulls
+		WHERE COALESCE(session_id,'')<>'' OR COALESCE(last_review_id,0)<>0
+		ON CONFLICT(pull_id,agent) DO NOTHING`); err != nil {
+		return fmt.Errorf("migrate pull reviewer states: %w", err)
 	}
 	return nil
 }

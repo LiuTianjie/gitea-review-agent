@@ -21,7 +21,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Pin the codex CLI. NOTE: spiked behavior (thread.started event id,
     # generic `codex exec` honoring --output-schema, resume) verified on 0.133.0;
     # re-verify if you bump this.
-    && npm install -g @openai/codex@0.135.0 \
+    && npm install -g @openai/codex@0.135.0 @anthropic-ai/claude-code \
+    && arch="$(dpkg --print-architecture)" \
+    && case "$arch" in \
+        amd64) cc_arch="linux-x64-musl" ;; \
+        arm64) cc_arch="linux-arm64-musl" ;; \
+        *) echo "unsupported arch for cc-switch: $arch" >&2; exit 1 ;; \
+      esac \
+    && curl -fsSL -o /tmp/cc-switch.tar.gz "https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-${cc_arch}.tar.gz" \
+    && tar -xzf /tmp/cc-switch.tar.gz -C /tmp \
+    && install -m 0755 /tmp/cc-switch /usr/local/bin/cc-switch \
+    && rm -f /tmp/cc-switch.tar.gz /tmp/cc-switch \
     && apt-get purge -y gnupg && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
@@ -37,9 +47,11 @@ ENV LISTEN_ADDR=:8080 \
     CACHE_DIR=/cache \
     WORK_DIR=/work \
     CODEX_HOME=/codex-home \
-    CODEX_AUTH_MODE=authfile
+    CODEX_AUTH_MODE=authfile \
+    CLAUDE_HOME=/claude-home \
+    CC_SWITCH_CONFIG_DIR=/cc-switch
 
-VOLUME ["/data", "/cache", "/work", "/codex-home"]
+VOLUME ["/data", "/cache", "/work", "/codex-home", "/claude-home", "/cc-switch"]
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

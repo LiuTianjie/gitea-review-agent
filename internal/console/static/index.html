@@ -386,12 +386,14 @@
     <div class="quick-meta">
       <span class="chip">webhook</span>
       <span class="chip">codex</span>
+      <span class="chip">claude</span>
       <span class="chip">jobs</span>
     </div>
   </div>
 
   <nav class="tabs" aria-label="控制台视图">
     <button class="tab-btn active" data-tab="jobs" type="button">任务</button>
+    <button class="tab-btn" data-tab="analytics" type="button">分析</button>
     <button class="tab-btn" data-tab="config" type="button">配置</button>
   </nav>
 
@@ -436,6 +438,40 @@
         <div class="empty-state">选择一个任务查看日志详情</div>
       </aside>
     </div>
+  </section>
+  </div>
+
+  <div id="tab-analytics" class="tab-panel">
+  <section>
+    <div class="section-bar">
+      <div class="section-title">
+        <h2>审查分析报告</h2>
+        <span class="muted" id="analysisMeta"></span>
+      </div>
+      <div class="section-actions">
+        <button id="analysisCreateBtn" type="button">生成分析报告</button>
+        <button class="secondary" id="analysisRefreshBtn" type="button">刷新</button>
+      </div>
+    </div>
+    <div class="stats-grid" id="analysisStats">
+      <div class="stat-card"><span>Review 成功率</span><strong>--</strong><small>review_runs</small></div>
+      <div class="stat-card"><span>问题总数</span><strong>--</strong><small>findings</small></div>
+      <div class="stat-card"><span>Open 问题</span><strong>--</strong><small>仍需关注</small></div>
+      <div class="stat-card"><span>严重 Open</span><strong>--</strong><small>high + critical</small></div>
+      <div class="stat-card"><span>已修复</span><strong>--</strong><small>fixed</small></div>
+    </div>
+    <div class="jobs-layout">
+      <div class="table-wrap">
+        <h2>Top Tags</h2>
+        <table><thead><tr><th>Tag</th><th>次数</th></tr></thead><tbody id="analysisTags"><tr><td colspan="2" class="muted">暂无报告</td></tr></tbody></table>
+        <h2>最近严重问题</h2>
+        <table><thead><tr><th>Agent</th><th>严重度</th><th>位置</th><th>标题</th><th>状态</th></tr></thead><tbody id="analysisSevere"><tr><td colspan="5" class="muted">暂无报告</td></tr></tbody></table>
+      </div>
+      <aside class="job-detail" id="analysisDetail">
+        <div class="empty-state">点击“生成分析报告”后查看全量历史聚合</div>
+      </aside>
+    </div>
+    <div class="msg" id="analysisMsg"></div>
   </section>
   </div>
 
@@ -494,6 +530,43 @@
           <option value="danger-full-access">danger-full-access（容器无 bwrap 时使用）</option>
         </select>
       </div>
+      <div>
+        <label for="claude_enabled">Claude Reviewer</label>
+        <select id="claude_enabled">
+          <option value="false">disabled</option>
+          <option value="true">enabled</option>
+        </select>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="claude_model">Claude 模型</label>
+        <input id="claude_model" placeholder="sonnet">
+      </div>
+      <div>
+        <label for="claude_api_key">Claude API Key</label>
+        <input id="claude_api_key" type="password" placeholder="留空则保持不变">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="claude_base_url">Claude Base URL</label>
+        <input id="claude_base_url" placeholder="中转地址，留空使用默认">
+      </div>
+      <div>
+        <label for="claude_home">Claude Home</label>
+        <input id="claude_home" placeholder="/claude-home">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="cc_switch_config_dir">cc-switch 配置目录</label>
+        <input id="cc_switch_config_dir" placeholder="/cc-switch">
+      </div>
+      <div>
+        <label for="cc_switch_provider_id">cc-switch Provider ID</label>
+        <input id="cc_switch_provider_id" placeholder="留空则不自动 switch">
+      </div>
     </div>
     <div class="row">
       <div>
@@ -527,7 +600,7 @@
   </section>
 
   <section>
-    <h2>Codex 鉴权状态</h2>
+    <h2>Reviewer 状态</h2>
     <button id="statusBtn">检查状态</button>
     <div class="msg" id="statusMsg"></div>
   </section>
@@ -540,8 +613,9 @@
   // 字段 id -> 设置键。所有 id 与 lower_snake_case 的设置键一一对应。
   var FIELDS = ["gitea_url","gitea_token","webhook_secret","model","trigger_keywords",
                 "concurrency","codex_auth_mode","codex_api_key","codex_sandbox_mode",
+                "claude_enabled","claude_model","claude_api_key","claude_base_url","claude_home","cc_switch_config_dir","cc_switch_provider_id",
                 "repo_allowlist","timeout"];
-  var SECRETS = {gitea_token:1, webhook_secret:1, codex_api_key:1};
+  var SECRETS = {gitea_token:1, webhook_secret:1, codex_api_key:1, claude_api_key:1};
   var REDACTED = "***set***";
   var jobCache = [];
   var selectedJobID = null;
@@ -569,6 +643,7 @@
       panel.classList.toggle("active", panel.id === "tab-" + name);
     });
     if (name === "jobs") loadJobs();
+    if (name === "analytics") loadAnalysisLatest();
   }
 
   function loadSettings(){
@@ -597,7 +672,7 @@
       body: JSON.stringify({settings: payload})
     }).then(function(r){ return r.json().then(function(b){ return {ok:r.ok, b:b}; }); })
       .then(function(res){
-        if (res.ok) { show($("settingsMsg"), "已保存 " + (res.b.updated||0) + " 项设置；重启服务后 worker/client 才会使用新值", true); loadSettings(); loadEffectiveConfig(); }
+        if (res.ok) { show($("settingsMsg"), "已保存 " + (res.b.updated||0) + " 项设置；后续 review 会使用 reviewer 相关新值", true); loadSettings(); loadEffectiveConfig(); loadStatus(); }
         else { show($("settingsMsg"), "保存失败：" + (res.b.error||""), false); }
       }).catch(function(e){ show($("settingsMsg"), "保存失败：" + e, false); });
   }
@@ -635,6 +710,7 @@
         "<p><strong>Gitea 令牌：</strong>" + (c.gitea_token_set ? "已加载" : "未加载") +
         "　<strong>Webhook 密钥：</strong>" + (c.webhook_secret_set ? "已加载" : "未加载") + "</p>" +
         "<p><strong>模型：</strong><code>" + esc(c.model || "") + "</code>　<strong>鉴权：</strong><code>" + esc(c.codex_auth_mode || "") + "</code>　<strong>沙箱：</strong><code>" + esc(c.codex_sandbox_mode || "") + "</code>　<strong>并发：</strong><code>" + esc(c.concurrency) + "</code></p>" +
+        "<p><strong>Claude：</strong><code>" + esc(c.claude_enabled ? "enabled" : "disabled") + "</code>　<strong>模型：</strong><code>" + esc(c.claude_model || "") + "</code>　<strong>API Key：</strong>" + (c.claude_api_key_set ? "已加载" : "未加载") + "　<strong>Base URL：</strong><code>" + esc(c.claude_base_url || "默认") + "</code>　<strong>cc-switch：</strong><code>" + esc(c.cc_switch_provider_id || "不自动切换") + "</code></p>" +
         "<p><strong>配置来源：</strong><code>" + esc(c.config_source || "db-over-env") + "</code></p>" +
         "<p class='muted'>" + esc(c.runtime_reload_note || "") + "</p>";
       show($("effectiveMsg"), "已读取当前进程配置", true);
@@ -755,6 +831,74 @@
       "</div><h2>日志详情</h2><div class='timeline'>" + timeline + "</div>";
   }
 
+  function loadAnalysisLatest(){
+    fetch("/admin/api/analytics/reports/latest").then(function(r){ return r.json(); }).then(function(payload){
+      if (!payload.ok) throw new Error(payload.error || "load failed");
+      renderAnalysis(payload.report);
+    }).catch(function(e){ show($("analysisMsg"), "加载失败：" + e, false); });
+  }
+
+  function createAnalysisReport(){
+    $("analysisCreateBtn").disabled = true;
+    show($("analysisMsg"), "正在生成全量历史分析…", true);
+    fetch("/admin/api/analytics/reports", {method: "POST"}).then(function(r){
+      return r.json().then(function(b){ return {ok:r.ok, b:b}; });
+    }).then(function(res){
+      if (!res.ok || !res.b.ok) throw new Error((res.b && res.b.error) || "generate failed");
+      renderAnalysis(res.b.report);
+      show($("analysisMsg"), "分析报告已生成", true);
+    }).catch(function(e){
+      show($("analysisMsg"), "生成失败：" + e, false);
+    }).finally(function(){
+      $("analysisCreateBtn").disabled = false;
+    });
+  }
+
+  function renderAnalysis(report){
+    if (!report) {
+      $("analysisMeta").textContent = "暂无报告";
+      $("analysisTags").innerHTML = '<tr><td colspan="2" class="muted">暂无报告</td></tr>';
+      $("analysisSevere").innerHTML = '<tr><td colspan="5" class="muted">暂无报告</td></tr>';
+      $("analysisDetail").innerHTML = '<div class="empty-state">点击“生成分析报告”后查看全量历史聚合</div>';
+      return;
+    }
+    var s = report.summary || {};
+    var rate = typeof s.success_rate === "number" ? Math.round(s.success_rate * 1000) / 10 + "%" : "--";
+    $("analysisMeta").textContent = "报告 #" + report.id + " · " + prettyTime(report.created_at);
+    $("analysisStats").innerHTML =
+      "<div class='stat-card'><span>Review 成功率</span><strong>" + esc(rate) + "</strong><small>" + esc(s.successful_review_runs || 0) + " / " + esc((s.successful_review_runs || 0) + (s.failed_review_runs || 0)) + "</small></div>" +
+      "<div class='stat-card'><span>问题总数</span><strong>" + esc(s.total_findings || 0) + "</strong><small>findings</small></div>" +
+      "<div class='stat-card'><span>Open 问题</span><strong>" + esc(s.open_findings || 0) + "</strong><small>仍需关注</small></div>" +
+      "<div class='stat-card'><span>严重 Open</span><strong>" + esc(s.high_critical_open || 0) + "</strong><small>high + critical</small></div>" +
+      "<div class='stat-card'><span>已修复</span><strong>" + esc(s.fixed_findings || 0) + "</strong><small>fixed</small></div>";
+    var tags = s.top_tags || [];
+    $("analysisTags").innerHTML = tags.length ? tags.map(function(t){
+      return "<tr><td>" + esc(t.tag) + "</td><td>" + esc(t.count) + "</td></tr>";
+    }).join("") : '<tr><td colspan="2" class="muted">暂无 tags</td></tr>';
+    var severe = s.recent_severe || [];
+    $("analysisSevere").innerHTML = severe.length ? severe.map(function(f){
+      return "<tr><td>" + esc(f.agent) + "</td><td><span class='badge s-failed'>" + esc(f.severity) + "</span></td><td><code>" + esc(f.path) + ":" + esc(f.line) + "</code></td><td>" + esc(f.title) + "</td><td>" + esc(f.status) + "</td></tr>";
+    }).join("") : '<tr><td colspan="5" class="muted">暂无 high/critical 问题</td></tr>';
+    renderAnalysisDetail(s);
+  }
+
+  function renderAnalysisDetail(s){
+    var agents = s.by_agent || {};
+    var agentRows = Object.keys(agents).sort().map(function(name){
+      var a = agents[name] || {};
+      return "<div class='metric'><span>" + esc(name) + "</span><strong>" + esc(a.findings || 0) + " findings</strong><small>" + esc(a.succeeded || 0) + " ok / " + esc(a.failed || 0) + " failed</small></div>";
+    }).join("");
+    var sev = s.by_severity || {};
+    var sevText = Object.keys(sev).sort().map(function(k){ return esc(k) + ": " + esc(sev[k]); }).join("<br>");
+    var repeated = (s.repeated_titles || []).map(function(t){ return "<li>" + esc(t.title) + " <strong>" + esc(t.count) + "</strong></li>"; }).join("");
+    var overlap = (s.agent_overlap || []).map(function(o){ return "<li><code>" + esc(o.path) + ":" + esc(o.line) + "</code> " + esc(o.title) + " · " + esc((o.agents || []).join(", ")) + "</li>"; }).join("");
+    $("analysisDetail").innerHTML =
+      "<h2>Agent 汇总</h2><div class='detail-grid'>" + (agentRows || "<div class='empty-state'>暂无 reviewer run</div>") + "</div>" +
+      "<h2>严重度分布</h2><p>" + (sevText || "暂无 findings") + "</p>" +
+      "<h2>重复标题</h2><ul>" + (repeated || "<li class='muted'>暂无重复标题</li>") + "</ul>" +
+      "<h2>Codex / Claude 重叠</h2><ul>" + (overlap || "<li class='muted'>暂无重叠问题</li>") + "</ul>";
+  }
+
   document.addEventListener("click", function(e){
     var tab = e.target.closest(".tab-btn");
     if (tab) { switchTab(tab.getAttribute("data-tab")); return; }
@@ -772,6 +916,8 @@
   $("uploadBtn").addEventListener("click", uploadAuth);
   $("statusBtn").addEventListener("click", checkStatus);
   $("jobsBtn").addEventListener("click", loadJobs);
+  $("analysisCreateBtn").addEventListener("click", createAnalysisReport);
+  $("analysisRefreshBtn").addEventListener("click", loadAnalysisLatest);
   $("prevJobsBtn").addEventListener("click", function(){ goJobsPage(-1); });
   $("nextJobsBtn").addEventListener("click", function(){ goJobsPage(1); });
   $("jobsPageSize").addEventListener("change", changeJobsPageSize);
@@ -779,6 +925,7 @@
   loadSettings();
   loadEffectiveConfig();
   loadJobs();
+  loadAnalysisLatest();
   setInterval(loadJobs, 10000);
 })();
 </script>

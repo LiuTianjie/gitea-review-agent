@@ -65,6 +65,8 @@ type Runner struct {
 
 var _ model.CodexRunner = (*Runner)(nil)
 
+func (r *Runner) Name() string { return "codex" }
+
 // New builds a Runner from Options. CODEX_BIN overrides Options.Bin.
 func New(opts Options) *Runner {
 	bin := opts.Bin

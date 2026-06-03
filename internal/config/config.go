@@ -33,7 +33,10 @@ const (
 	DefaultCacheDir    = "/cache"
 	DefaultWorkDir     = "/work"
 	DefaultCodexHome   = "/codex-home"
+	DefaultClaudeHome  = "/claude-home"
+	DefaultCCSwitchDir = "/cc-switch"
 	DefaultModel       = "gpt-5-codex"
+	DefaultClaudeModel = "sonnet"
 	DefaultAuthMode    = AuthModeAuthFile
 	DefaultSandboxMode = SandboxReadOnly
 	DefaultConcurrency = 2
@@ -63,6 +66,15 @@ type Config struct {
 	CodexAPIKey   string
 	CodexSandbox  string
 
+	// Claude
+	ClaudeEnabled     bool
+	ClaudeModel       string
+	ClaudeAPIKey      string
+	ClaudeBaseURL     string
+	ClaudeHome        string
+	CCSwitchConfigDir string
+	CCSwitchProvider  string
+
 	// Console
 	AdminPassword string
 
@@ -76,28 +88,46 @@ type Config struct {
 	SecretKey string
 }
 
+// Clone returns an independent copy safe for sharing across goroutines.
+func (c *Config) Clone() *Config {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	out.TriggerKeywords = append([]string(nil), c.TriggerKeywords...)
+	out.RepoAllowlist = append([]string(nil), c.RepoAllowlist...)
+	return &out
+}
+
 // LoadEnv builds a Config from environment variables, falling back to defaults
 // for any variable that is unset or empty.
 func LoadEnv() *Config {
 	c := &Config{
-		ListenAddr:      getEnv("LISTEN_ADDR", DefaultListenAddr),
-		DBPath:          getEnv("DB_PATH", DefaultDBPath),
-		CacheDir:        getEnv("CACHE_DIR", DefaultCacheDir),
-		WorkDir:         getEnv("WORK_DIR", DefaultWorkDir),
-		CodexHome:       getEnv("CODEX_HOME", DefaultCodexHome),
-		GiteaURL:        os.Getenv("GITEA_URL"),
-		GiteaToken:      os.Getenv("GITEA_TOKEN"),
-		WebhookSecret:   os.Getenv("WEBHOOK_SECRET"),
-		Model:           getEnv("MODEL", DefaultModel),
-		CodexAuthMode:   normalizeAuthMode(getEnv("CODEX_AUTH_MODE", DefaultAuthMode)),
-		CodexAPIKey:     os.Getenv("CODEX_API_KEY"),
-		CodexSandbox:    normalizeSandboxMode(getEnv("CODEX_SANDBOX_MODE", DefaultSandboxMode)),
-		AdminPassword:   os.Getenv("ADMIN_PASSWORD"),
-		TriggerKeywords: parseList(os.Getenv("TRIGGER_KEYWORDS"), DefaultTriggerKeywords),
-		Concurrency:     parseInt(os.Getenv("CONCURRENCY"), DefaultConcurrency),
-		RepoAllowlist:   parseList(os.Getenv("REPO_ALLOWLIST"), nil),
-		Timeout:         parseDuration(os.Getenv("TIMEOUT"), DefaultTimeout),
-		SecretKey:       os.Getenv("SECRET_KEY"),
+		ListenAddr:        getEnv("LISTEN_ADDR", DefaultListenAddr),
+		DBPath:            getEnv("DB_PATH", DefaultDBPath),
+		CacheDir:          getEnv("CACHE_DIR", DefaultCacheDir),
+		WorkDir:           getEnv("WORK_DIR", DefaultWorkDir),
+		CodexHome:         getEnv("CODEX_HOME", DefaultCodexHome),
+		GiteaURL:          os.Getenv("GITEA_URL"),
+		GiteaToken:        os.Getenv("GITEA_TOKEN"),
+		WebhookSecret:     os.Getenv("WEBHOOK_SECRET"),
+		Model:             getEnv("MODEL", DefaultModel),
+		CodexAuthMode:     normalizeAuthMode(getEnv("CODEX_AUTH_MODE", DefaultAuthMode)),
+		CodexAPIKey:       os.Getenv("CODEX_API_KEY"),
+		CodexSandbox:      normalizeSandboxMode(getEnv("CODEX_SANDBOX_MODE", DefaultSandboxMode)),
+		ClaudeEnabled:     parseBool(os.Getenv("CLAUDE_ENABLED"), false),
+		ClaudeModel:       getEnv("CLAUDE_MODEL", DefaultClaudeModel),
+		ClaudeAPIKey:      os.Getenv("CLAUDE_API_KEY"),
+		ClaudeBaseURL:     os.Getenv("CLAUDE_BASE_URL"),
+		ClaudeHome:        getEnv("CLAUDE_HOME", DefaultClaudeHome),
+		CCSwitchConfigDir: getEnv("CC_SWITCH_CONFIG_DIR", DefaultCCSwitchDir),
+		CCSwitchProvider:  os.Getenv("CC_SWITCH_PROVIDER_ID"),
+		AdminPassword:     os.Getenv("ADMIN_PASSWORD"),
+		TriggerKeywords:   parseList(os.Getenv("TRIGGER_KEYWORDS"), DefaultTriggerKeywords),
+		Concurrency:       parseInt(os.Getenv("CONCURRENCY"), DefaultConcurrency),
+		RepoAllowlist:     parseList(os.Getenv("REPO_ALLOWLIST"), nil),
+		Timeout:           parseDuration(os.Getenv("TIMEOUT"), DefaultTimeout),
+		SecretKey:         os.Getenv("SECRET_KEY"),
 	}
 	return c
 }
@@ -129,6 +159,27 @@ func (c *Config) ApplyOverrides(settings map[string]string) {
 	}
 	if v, ok := settings["codex_sandbox_mode"]; ok {
 		c.CodexSandbox = normalizeSandboxMode(v)
+	}
+	if v, ok := settings["claude_enabled"]; ok {
+		c.ClaudeEnabled = parseBool(v, c.ClaudeEnabled)
+	}
+	if v, ok := settings["claude_model"]; ok {
+		c.ClaudeModel = v
+	}
+	if v, ok := settings["claude_api_key"]; ok {
+		c.ClaudeAPIKey = v
+	}
+	if v, ok := settings["claude_base_url"]; ok {
+		c.ClaudeBaseURL = v
+	}
+	if v, ok := settings["claude_home"]; ok {
+		c.ClaudeHome = v
+	}
+	if v, ok := settings["cc_switch_config_dir"]; ok {
+		c.CCSwitchConfigDir = v
+	}
+	if v, ok := settings["cc_switch_provider_id"]; ok {
+		c.CCSwitchProvider = v
 	}
 	if v, ok := settings["admin_password"]; ok {
 		c.AdminPassword = v
@@ -237,6 +288,21 @@ func parseInt(s string, def int) int {
 		return def
 	}
 	return n
+}
+
+func parseBool(s string, def bool) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return def
+	}
+	switch s {
+	case "1", "true", "yes", "y", "on", "enabled":
+		return true
+	case "0", "false", "no", "n", "off", "disabled":
+		return false
+	default:
+		return def
+	}
 }
 
 func parseDuration(s string, def time.Duration) time.Duration {

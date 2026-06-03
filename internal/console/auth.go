@@ -21,8 +21,12 @@ const (
 // consoleAuthMiddleware guards the console with an in-app login page instead of
 // HTTP Basic Auth. When password is empty the console is disabled, so a
 // misconfigured deployment never exposes an open panel.
-func consoleAuthMiddleware(password string, next http.Handler) http.Handler {
+func consoleAuthMiddleware(passwordFn func() string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		password := ""
+		if passwordFn != nil {
+			password = passwordFn()
+		}
 		if password == "" {
 			writeDisabledConsole(w)
 			return

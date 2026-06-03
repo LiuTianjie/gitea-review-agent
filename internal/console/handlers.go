@@ -24,22 +24,64 @@ var indexHTML []byte
 // codex.Runner.Status; tests inject a stub. A nil StatusFunc means "not wired".
 type StatusFunc func(context.Context) (string, error)
 
+type StatusProvider func() map[string]StatusFunc
+
+type ConfigProvider func() *config.Config
+
+type SettingsApplyFunc func(context.Context, map[string]string) error
+
 // Console serves the authenticated admin panel and its JSON API.
 type Console struct {
-	store     model.Store
-	cfg       *config.Config
-	codexHome string
-	statusFn  StatusFunc
+	store           model.Store
+	cfg             *config.Config
+	configProvider  ConfigProvider
+	codexHome       string
+	statusFns       map[string]StatusFunc
+	statusProvider  StatusProvider
+	onSettingsApply SettingsApplyFunc
 }
 
-// New builds a Console. statusFn is optional; pass zero or one function. Only the
-// first is used. codexHome is the directory where auth.json uploads are written.
-func New(store model.Store, cfg *config.Config, codexHome string, statusFn ...StatusFunc) *Console {
-	c := &Console{store: store, cfg: cfg, codexHome: codexHome}
-	if len(statusFn) > 0 {
-		c.statusFn = statusFn[0]
+// New builds a Console. codexHome is the directory where auth.json uploads are written.
+func New(store model.Store, cfg *config.Config, codexHome string, statusArgs ...any) *Console {
+	c := &Console{store: store, cfg: cfg, codexHome: codexHome, statusFns: map[string]StatusFunc{}}
+	for _, arg := range statusArgs {
+		switch v := arg.(type) {
+		case StatusFunc:
+			c.statusFns["codex"] = v
+		case map[string]StatusFunc:
+			for name, fn := range v {
+				c.statusFns[name] = fn
+			}
+		case StatusProvider:
+			c.statusProvider = v
+		case ConfigProvider:
+			c.configProvider = v
+		case SettingsApplyFunc:
+			c.onSettingsApply = v
+		}
 	}
 	return c
+}
+
+func (c *Console) currentConfig() *config.Config {
+	if c.configProvider != nil {
+		return c.configProvider()
+	}
+	if c.cfg != nil {
+		return c.cfg.Clone()
+	}
+	return nil
+}
+
+func (c *Console) currentStatusFns() map[string]StatusFunc {
+	if c.statusProvider != nil {
+		return c.statusProvider()
+	}
+	out := make(map[string]StatusFunc, len(c.statusFns))
+	for name, fn := range c.statusFns {
+		out[name] = fn
+	}
+	return out
 }
 
 // Routes returns the console handler tree wrapped in Basic Auth. Mount it under
@@ -54,12 +96,16 @@ func (c *Console) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/api/status", c.handleStatus)
 	mux.HandleFunc("GET /admin/api/effective-config", c.handleEffectiveConfig)
 	mux.HandleFunc("GET /admin/api/jobs", c.handleJobs)
+	mux.HandleFunc("POST /admin/api/analytics/reports", c.handleCreateAnalysisReport)
+	mux.HandleFunc("GET /admin/api/analytics/reports/latest", c.handleLatestAnalysisReport)
+	mux.HandleFunc("GET /admin/api/analytics/reports", c.handleListAnalysisReports)
 
-	password := ""
-	if c.cfg != nil {
-		password = c.cfg.AdminPassword
-	}
-	return consoleAuthMiddleware(password, mux)
+	return consoleAuthMiddleware(func() string {
+		if cfg := c.currentConfig(); cfg != nil {
+			return cfg.AdminPassword
+		}
+		return ""
+	}, mux)
 }
 
 // ---------- handlers ----------
@@ -120,6 +166,7 @@ func (c *Console) handlePostSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	applied := make(map[string]string, len(updates))
 	for k, v := range updates {
 		// Never store the redaction placeholder: it means "leave the existing
 		// secret unchanged", so the UI can re-submit a form without wiping secrets.
@@ -130,8 +177,15 @@ func (c *Console) handlePostSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		applied[k] = v
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "updated": len(updates)})
+	if c.onSettingsApply != nil && len(applied) > 0 {
+		if err := c.onSettingsApply(r.Context(), applied); err != nil {
+			writeError(w, http.StatusInternalServerError, "settings saved but reload failed: "+err.Error())
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "updated": len(applied)})
 }
 
 // authFile is the minimal shape we validate before persisting auth.json. The
@@ -159,15 +213,19 @@ func (c *Console) handlePostAuthFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if c.codexHome == "" {
+	codexHome := c.codexHome
+	if cfg := c.currentConfig(); cfg != nil && strings.TrimSpace(cfg.CodexHome) != "" {
+		codexHome = cfg.CodexHome
+	}
+	if codexHome == "" {
 		writeError(w, http.StatusInternalServerError, "codex home not configured")
 		return
 	}
-	if err := os.MkdirAll(c.codexHome, 0o700); err != nil {
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
 		writeError(w, http.StatusInternalServerError, "create codex home: "+err.Error())
 		return
 	}
-	dest := filepath.Join(c.codexHome, "auth.json")
+	dest := filepath.Join(codexHome, "auth.json")
 	if err := os.WriteFile(dest, raw, 0o600); err != nil {
 		writeError(w, http.StatusInternalServerError, "write auth.json: "+err.Error())
 		return
@@ -176,42 +234,68 @@ func (c *Console) handlePostAuthFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Console) handleStatus(w http.ResponseWriter, r *http.Request) {
-	if c.statusFn == nil {
+	statusFns := c.currentStatusFns()
+	if len(statusFns) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":     false,
 			"status": "status check not configured",
 		})
 		return
 	}
-	status, err := c.statusFn(r.Context())
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":     false,
-			"status": err.Error(),
-		})
-		return
+	statuses := map[string]any{}
+	allOK := true
+	var lines []string
+	for name, fn := range statusFns {
+		status, err := fn(r.Context())
+		ok := err == nil
+		if !ok {
+			allOK = false
+			if strings.TrimSpace(status) == "" {
+				status = err.Error()
+			} else {
+				status = strings.TrimSpace(status) + "\n\nerror: " + err.Error()
+			}
+		}
+		statuses[name] = map[string]any{"ok": ok, "status": status}
+		lines = append(lines, name+": "+status)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": status})
+	statusText := strings.Join(lines, "\n\n")
+	if len(statusFns) == 1 {
+		for _, v := range statuses {
+			if item, ok := v.(map[string]any); ok {
+				statusText, _ = item["status"].(string)
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": allOK, "status": statusText, "reviewers": statuses})
 }
 
 func (c *Console) handleEffectiveConfig(w http.ResponseWriter, r *http.Request) {
-	if c.cfg == nil {
+	cfg := c.currentConfig()
+	if cfg == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "config not available"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":                  true,
-		"gitea_url":           c.cfg.GiteaURL,
-		"gitea_token_set":     strings.TrimSpace(c.cfg.GiteaToken) != "",
-		"webhook_secret_set":  strings.TrimSpace(c.cfg.WebhookSecret) != "",
-		"model":               c.cfg.Model,
-		"codex_auth_mode":     c.cfg.CodexAuthMode,
-		"codex_sandbox_mode":  c.cfg.CodexSandbox,
-		"concurrency":         c.cfg.Concurrency,
-		"trigger_keywords":    strings.Join(c.cfg.TriggerKeywords, ","),
-		"repo_allowlist":      strings.Join(c.cfg.RepoAllowlist, ","),
-		"config_source":       os.Getenv("CONFIG_SOURCE"),
-		"runtime_reload_note": "保存设置会写入数据库；当前 worker/client 在进程启动时读取配置，重启服务后才会使用新值。",
+		"ok":                    true,
+		"gitea_url":             cfg.GiteaURL,
+		"gitea_token_set":       strings.TrimSpace(cfg.GiteaToken) != "",
+		"webhook_secret_set":    strings.TrimSpace(cfg.WebhookSecret) != "",
+		"model":                 cfg.Model,
+		"codex_auth_mode":       cfg.CodexAuthMode,
+		"codex_sandbox_mode":    cfg.CodexSandbox,
+		"claude_enabled":        cfg.ClaudeEnabled,
+		"claude_model":          cfg.ClaudeModel,
+		"claude_api_key_set":    strings.TrimSpace(cfg.ClaudeAPIKey) != "",
+		"claude_base_url":       cfg.ClaudeBaseURL,
+		"claude_home":           cfg.ClaudeHome,
+		"cc_switch_config_dir":  cfg.CCSwitchConfigDir,
+		"cc_switch_provider_id": cfg.CCSwitchProvider,
+		"concurrency":           cfg.Concurrency,
+		"trigger_keywords":      strings.Join(cfg.TriggerKeywords, ","),
+		"repo_allowlist":        strings.Join(cfg.RepoAllowlist, ","),
+		"config_source":         os.Getenv("CONFIG_SOURCE"),
+		"runtime_reload_note":   "保存设置会写入数据库；后续 review 会使用 reviewer 相关新值，监听地址和 worker 并发仍需重启服务。",
 	})
 }
 
@@ -345,6 +429,61 @@ func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
 			SuccessRate:  successRate,
 		},
 	})
+}
+
+type analysisReportView struct {
+	ID        int64                 `json:"id"`
+	CreatedAt string                `json:"created_at"`
+	Summary   model.AnalysisSummary `json:"summary"`
+}
+
+func (c *Console) handleCreateAnalysisReport(w http.ResponseWriter, r *http.Request) {
+	summary, err := c.store.BuildAnalysisSummary(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	report, err := c.store.CreateAnalysisReport(r.Context(), summary)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "report": toAnalysisReportView(*report)})
+}
+
+func (c *Console) handleLatestAnalysisReport(w http.ResponseWriter, r *http.Request) {
+	report, err := c.store.LatestAnalysisReport(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if report == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "report": nil})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "report": toAnalysisReportView(*report)})
+}
+
+func (c *Console) handleListAnalysisReports(w http.ResponseWriter, r *http.Request) {
+	limit := parsePositiveInt(r.URL.Query().Get("limit"), 20)
+	reports, err := c.store.ListAnalysisReports(r.Context(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]analysisReportView, 0, len(reports))
+	for _, report := range reports {
+		out = append(out, toAnalysisReportView(report))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "reports": out})
+}
+
+func toAnalysisReportView(report model.AnalysisReport) analysisReportView {
+	out := analysisReportView{ID: report.ID, Summary: report.Summary}
+	if !report.CreatedAt.IsZero() {
+		out.CreatedAt = report.CreatedAt.Format(timeLayout)
+	}
+	return out
 }
 
 func parsePositiveInt(raw string, fallback int) int {

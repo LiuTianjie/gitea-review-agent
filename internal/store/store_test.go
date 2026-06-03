@@ -54,7 +54,7 @@ func TestOpenMigratesExistingFindingsTable(t *testing.T) {
 	}
 	if err := st.SaveFindings(ctx, pull.ID, "sha1", []model.Finding{{
 		Path: "a.go", Line: 10, Side: model.SideNew, Severity: model.SeverityHigh, Title: "bug A", Body: "x",
-	}}); err != nil {
+	}}, model.FindingSaveOptions{Agent: "codex"}); err != nil {
 		t.Fatalf("SaveFindings after migration: %v", err)
 	}
 }
@@ -444,7 +444,7 @@ func TestSaveAndListFindings(t *testing.T) {
 		{Path: "a.go", Line: 10, Side: model.SideNew, Severity: model.SeverityHigh, Title: "bug A", Body: "x"},
 		{Path: "b.go", Line: 20, Side: model.SideNew, Severity: model.SeverityLow, Title: "nit B", Body: "y"},
 	}
-	if err := st.SaveFindings(ctx, pull.ID, "sha1", fs); err != nil {
+	if err := st.SaveFindings(ctx, pull.ID, "sha1", fs, model.FindingSaveOptions{Agent: "codex"}); err != nil {
 		t.Fatalf("SaveFindings: %v", err)
 	}
 
@@ -483,7 +483,7 @@ func TestSaveAndListFindings(t *testing.T) {
 
 	// Re-save the same findings with a new head SHA: upsert by fingerprint,
 	// no duplicate rows, first_seen_sha preserved, and still-current findings reopen.
-	if err := st.SaveFindings(ctx, pull.ID, "sha2", fs); err != nil {
+	if err := st.SaveFindings(ctx, pull.ID, "sha2", fs, model.FindingSaveOptions{Agent: "codex"}); err != nil {
 		t.Fatalf("SaveFindings resave: %v", err)
 	}
 	got2, err := st.ListFindings(ctx, pull.ID)
@@ -511,6 +511,70 @@ func TestSaveAndListFindings(t *testing.T) {
 	if got3[0].GiteaCommentID != 999 || got3[0].ReviewID != 888 {
 		t.Fatalf("MarkFindingPosted roundtrip: comment=%d review=%d",
 			got3[0].GiteaCommentID, got3[0].ReviewID)
+	}
+}
+
+func TestAnalysisReports(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	pr := model.PRRef{Owner: "acme", Repo: "widgets", Number: 21}
+	if err := st.UpsertPull(ctx, &model.PullState{PR: pr, HeadSHA: "sha0"}); err != nil {
+		t.Fatalf("UpsertPull: %v", err)
+	}
+	pull, err := st.GetPull(ctx, pr)
+	if err != nil {
+		t.Fatalf("GetPull: %v", err)
+	}
+	run := &model.ReviewRun{PullID: pull.ID, Agent: "codex", HeadSHA: "sha1"}
+	if err := st.CreateReviewRun(ctx, run); err != nil {
+		t.Fatalf("CreateReviewRun: %v", err)
+	}
+	fs := []model.Finding{{
+		Path: "a.go", Line: 10, Side: model.SideNew,
+		Severity: model.SeverityHigh, Title: "bug A", Body: "x", Tags: []string{"runtime", "panic"},
+	}}
+	mapped := map[string]bool{"codex:" + fs[0].Fingerprint(): true}
+	if err := st.SaveFindings(ctx, pull.ID, "sha1", fs, model.FindingSaveOptions{
+		Agent: "codex", ReviewRunID: run.ID, MappedFingerprints: mapped,
+	}); err != nil {
+		t.Fatalf("SaveFindings: %v", err)
+	}
+	if err := st.FinishReviewRun(ctx, run.ID, model.ReviewRunDone, "", len(fs)); err != nil {
+		t.Fatalf("FinishReviewRun: %v", err)
+	}
+	summary, err := st.BuildAnalysisSummary(ctx)
+	if err != nil {
+		t.Fatalf("BuildAnalysisSummary: %v", err)
+	}
+	if summary.TotalFindings != 1 || summary.HighCriticalOpen != 1 || summary.ByAgent["codex"].Findings != 1 {
+		t.Fatalf("summary mismatch: %+v", summary)
+	}
+	hasRuntime := false
+	for _, tag := range summary.TopTags {
+		if tag.Tag == "runtime" && tag.Count == 1 {
+			hasRuntime = true
+		}
+	}
+	if !hasRuntime {
+		t.Fatalf("top tags mismatch: %+v", summary.TopTags)
+	}
+	report, err := st.CreateAnalysisReport(ctx, summary)
+	if err != nil {
+		t.Fatalf("CreateAnalysisReport: %v", err)
+	}
+	latest, err := st.LatestAnalysisReport(ctx)
+	if err != nil {
+		t.Fatalf("LatestAnalysisReport: %v", err)
+	}
+	if latest == nil || latest.ID != report.ID || latest.Summary.TotalFindings != 1 {
+		t.Fatalf("latest mismatch: %+v", latest)
+	}
+	list, err := st.ListAnalysisReports(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListAnalysisReports: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != report.ID {
+		t.Fatalf("list mismatch: %+v", list)
 	}
 }
 

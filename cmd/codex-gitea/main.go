@@ -9,9 +9,11 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/turning4th/codex-gitea/internal/claude"
 	"github.com/turning4th/codex-gitea/internal/codex"
 	"github.com/turning4th/codex-gitea/internal/config"
 	"github.com/turning4th/codex-gitea/internal/console"
@@ -38,7 +40,8 @@ func main() {
 	// DB settings normally override env defaults. CONFIG_SOURCE=env makes
 	// container env the source of truth for deployments that should not depend
 	// on the mutable admin-console settings table.
-	if strings.EqualFold(os.Getenv("CONFIG_SOURCE"), "env") {
+	envConfigSource := strings.EqualFold(os.Getenv("CONFIG_SOURCE"), "env")
+	if envConfigSource {
 		logger.Printf("config source: env (database settings ignored)")
 	} else {
 		if settings, err := st.AllSettings(context.Background()); err == nil {
@@ -53,26 +56,36 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		logger.Fatalf("invalid config: %v", err)
 	}
+	var cfgMu sync.RWMutex
+	runtimeCfg := cfg.Clone()
+	configSnapshot := func() *config.Config {
+		cfgMu.RLock()
+		defer cfgMu.RUnlock()
+		return runtimeCfg.Clone()
+	}
+	applySettings := func(_ context.Context, updates map[string]string) error {
+		if envConfigSource {
+			return nil
+		}
+		cfgMu.Lock()
+		defer cfgMu.Unlock()
+		next := runtimeCfg.Clone()
+		next.ApplyOverrides(updates)
+		if err := next.Validate(); err != nil {
+			return err
+		}
+		runtimeCfg = next
+		return nil
+	}
 
 	// Build modules.
 	giteaClient := gitea.New(cfg.GiteaURL, cfg.GiteaToken, &http.Client{Timeout: 30 * time.Second})
 	cache := gitcache.New(cfg.CacheDir, cfg.WorkDir, gitcache.WithToken(cfg.GiteaToken))
 
-	codexOpts := codex.Options{
-		CodexHome:   cfg.CodexHome,
-		Model:       cfg.Model,
-		SandboxMode: cfg.CodexSandbox,
-		Timeout:     cfg.Timeout,
-	}
-	if cfg.CodexAuthMode == "apikey" {
-		codexOpts.APIKey = cfg.CodexAPIKey
-	}
-	runner := codex.New(codexOpts)
-
 	orch := &review.Orchestrator{
 		Store:           st,
 		Cache:           cache,
-		Codex:           runner,
+		ReviewersFunc:   func() []model.Reviewer { return buildReviewers(configSnapshot()) },
 		Gitea:           giteaClient,
 		TriggerKeywords: cfg.TriggerKeywords,
 		RepoAllowlist:   cfg.RepoAllowlist,
@@ -100,9 +113,14 @@ func main() {
 	}
 	wh := webhook.NewHandler(cfg.WebhookSecret, onEvent)
 
-	cons := console.New(st, cfg, cfg.CodexHome, func(ctx context.Context) (string, error) {
-		return runner.Status(ctx)
-	})
+	statusProvider := func() map[string]console.StatusFunc {
+		return buildStatusFns(configSnapshot())
+	}
+	cons := console.New(st, cfg, cfg.CodexHome,
+		console.ConfigProvider(configSnapshot),
+		console.StatusProvider(statusProvider),
+		console.SettingsApplyFunc(applySettings),
+	)
 
 	root := http.NewServeMux()
 	root.Handle("/webhook", wh)
@@ -133,4 +151,41 @@ func main() {
 	shutCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutCtx)
+}
+
+func buildReviewers(cfg *config.Config) []model.Reviewer {
+	if cfg == nil {
+		return nil
+	}
+	codexOpts := codex.Options{
+		CodexHome:   cfg.CodexHome,
+		Model:       cfg.Model,
+		SandboxMode: cfg.CodexSandbox,
+		Timeout:     cfg.Timeout,
+	}
+	if cfg.CodexAuthMode == config.AuthModeAPIKey {
+		codexOpts.APIKey = cfg.CodexAPIKey
+	}
+	reviewers := []model.Reviewer{codex.New(codexOpts)}
+	if cfg.ClaudeEnabled {
+		reviewers = append(reviewers, claude.New(claude.Options{
+			Model:             cfg.ClaudeModel,
+			APIKey:            cfg.ClaudeAPIKey,
+			BaseURL:           cfg.ClaudeBaseURL,
+			ClaudeHome:        cfg.ClaudeHome,
+			CCSwitchConfigDir: cfg.CCSwitchConfigDir,
+			CCSwitchProvider:  cfg.CCSwitchProvider,
+			Timeout:           cfg.Timeout,
+		}))
+	}
+	return reviewers
+}
+
+func buildStatusFns(cfg *config.Config) map[string]console.StatusFunc {
+	statusFns := map[string]console.StatusFunc{}
+	for _, reviewer := range buildReviewers(cfg) {
+		r := reviewer
+		statusFns[r.Name()] = func(ctx context.Context) (string, error) { return r.Status(ctx) }
+	}
+	return statusFns
 }
