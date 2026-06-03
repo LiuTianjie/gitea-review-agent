@@ -21,6 +21,8 @@ func TestLoadEnvDefaults(t *testing.T) {
 		"CODEX_AUTH_MODE", "CODEX_API_KEY", "GITEA_URL", "GITEA_TOKEN",
 		"WEBHOOK_SECRET", "ADMIN_PASSWORD", "TRIGGER_KEYWORDS", "CONCURRENCY",
 		"REPO_ALLOWLIST", "TIMEOUT", "SECRET_KEY", "CODEX_SANDBOX_MODE",
+		"CLAUDE_ENABLED", "CLAUDE_MODEL", "CLAUDE_API_KEY", "CLAUDE_BASE_URL",
+		"CLAUDE_HOME", "CC_SWITCH_CONFIG_DIR", "CC_SWITCH_PROVIDER_ID",
 	} {
 		t.Setenv(k, "")
 	}
@@ -48,6 +50,12 @@ func TestLoadEnvDefaults(t *testing.T) {
 	if c.CodexSandbox != DefaultSandboxMode {
 		t.Errorf("CodexSandbox = %q, want %q", c.CodexSandbox, DefaultSandboxMode)
 	}
+	if c.ClaudeHome != DefaultClaudeHome {
+		t.Errorf("ClaudeHome = %q, want %q", c.ClaudeHome, DefaultClaudeHome)
+	}
+	if c.CCSwitchConfigDir != DefaultCCSwitchDir {
+		t.Errorf("CCSwitchConfigDir = %q, want %q", c.CCSwitchConfigDir, DefaultCCSwitchDir)
+	}
 	if c.Concurrency != DefaultConcurrency {
 		t.Errorf("Concurrency = %d, want %d", c.Concurrency, DefaultConcurrency)
 	}
@@ -69,24 +77,31 @@ func TestLoadEnvDefaults(t *testing.T) {
 
 func TestLoadEnvValues(t *testing.T) {
 	setEnv(t, map[string]string{
-		"LISTEN_ADDR":        ":9090",
-		"DB_PATH":            "/tmp/db.sqlite",
-		"CACHE_DIR":          "/tmp/cache",
-		"WORK_DIR":           "/tmp/work",
-		"CODEX_HOME":         "/tmp/codex",
-		"GITEA_URL":          "https://git.example.com",
-		"GITEA_TOKEN":        "tok-123",
-		"WEBHOOK_SECRET":     "whsec",
-		"MODEL":              "gpt-5",
-		"CODEX_AUTH_MODE":    "apikey",
-		"CODEX_API_KEY":      "sk-abc",
-		"CODEX_SANDBOX_MODE": "danger-full-access",
-		"ADMIN_PASSWORD":     "hunter2",
-		"TRIGGER_KEYWORDS":   "/review, @bot , please-review",
-		"CONCURRENCY":        "5",
-		"REPO_ALLOWLIST":     "acme/widgets, acme/gadgets",
-		"TIMEOUT":            "30s",
-		"SECRET_KEY":         "key",
+		"LISTEN_ADDR":           ":9090",
+		"DB_PATH":               "/tmp/db.sqlite",
+		"CACHE_DIR":             "/tmp/cache",
+		"WORK_DIR":              "/tmp/work",
+		"CODEX_HOME":            "/tmp/codex",
+		"GITEA_URL":             "https://git.example.com",
+		"GITEA_TOKEN":           "tok-123",
+		"WEBHOOK_SECRET":        "whsec",
+		"MODEL":                 "gpt-5",
+		"CODEX_AUTH_MODE":       "apikey",
+		"CODEX_API_KEY":         "sk-abc",
+		"CODEX_SANDBOX_MODE":    "danger-full-access",
+		"CLAUDE_ENABLED":        "true",
+		"CLAUDE_MODEL":          "claude-opus-4-6-thinking",
+		"CLAUDE_API_KEY":        "ak-claude",
+		"CLAUDE_BASE_URL":       "https://llm.example.com",
+		"CLAUDE_HOME":           "/tmp/claude",
+		"CC_SWITCH_CONFIG_DIR":  "/tmp/cc-switch",
+		"CC_SWITCH_PROVIDER_ID": "relay",
+		"ADMIN_PASSWORD":        "hunter2",
+		"TRIGGER_KEYWORDS":      "/review, @bot , please-review",
+		"CONCURRENCY":           "5",
+		"REPO_ALLOWLIST":        "acme/widgets, acme/gadgets",
+		"TIMEOUT":               "30s",
+		"SECRET_KEY":            "key",
 	})
 
 	c := LoadEnv()
@@ -114,6 +129,12 @@ func TestLoadEnvValues(t *testing.T) {
 	}
 	if c.CodexSandbox != SandboxDangerFullAccess {
 		t.Errorf("CodexSandbox = %q, want danger-full-access", c.CodexSandbox)
+	}
+	if !c.ClaudeEnabled || c.ClaudeModel != "claude-opus-4-6-thinking" || c.ClaudeAPIKey != "ak-claude" || c.ClaudeBaseURL != "https://llm.example.com" {
+		t.Errorf("Claude config not loaded: %+v", c)
+	}
+	if c.ClaudeHome != "/tmp/claude" || c.CCSwitchConfigDir != "/tmp/cc-switch" || c.CCSwitchProvider != "relay" {
+		t.Errorf("Claude paths/provider not loaded: home=%q ccdir=%q provider=%q", c.ClaudeHome, c.CCSwitchConfigDir, c.CCSwitchProvider)
 	}
 	if c.AdminPassword != "hunter2" {
 		t.Errorf("AdminPassword = %q", c.AdminPassword)
@@ -159,17 +180,20 @@ func TestApplyOverrides(t *testing.T) {
 	}
 
 	c.ApplyOverrides(map[string]string{
-		"gitea_url":          "https://db.example.com",
-		"gitea_token":        "db-tok",
-		"model":              "db-model",
-		"codex_auth_mode":    "apikey",
-		"codex_api_key":      "sk-db",
-		"codex_sandbox_mode": "workspace-write",
-		"webhook_secret":     "db-secret",
-		"trigger_keywords":   "/lgtm,@review",
-		"concurrency":        "8",
-		"repo_allowlist":     "a/b",
-		"timeout":            "5m",
+		"gitea_url":            "https://db.example.com",
+		"gitea_token":          "db-tok",
+		"model":                "db-model",
+		"codex_auth_mode":      "apikey",
+		"codex_api_key":        "sk-db",
+		"codex_sandbox_mode":   "workspace-write",
+		"claude_model":         "",
+		"claude_home":          "",
+		"cc_switch_config_dir": "",
+		"webhook_secret":       "db-secret",
+		"trigger_keywords":     "/lgtm,@review",
+		"concurrency":          "8",
+		"repo_allowlist":       "a/b",
+		"timeout":              "5m",
 	})
 
 	if c.GiteaURL != "https://db.example.com" {
@@ -189,6 +213,15 @@ func TestApplyOverrides(t *testing.T) {
 	}
 	if c.CodexSandbox != SandboxWorkspaceWrite {
 		t.Errorf("CodexSandbox not overridden: %q", c.CodexSandbox)
+	}
+	if c.ClaudeModel != DefaultClaudeModel {
+		t.Errorf("ClaudeModel blank override = %q, want default", c.ClaudeModel)
+	}
+	if c.ClaudeHome != DefaultClaudeHome {
+		t.Errorf("ClaudeHome blank override = %q, want default", c.ClaudeHome)
+	}
+	if c.CCSwitchConfigDir != DefaultCCSwitchDir {
+		t.Errorf("CCSwitchConfigDir blank override = %q, want default", c.CCSwitchConfigDir)
 	}
 	if c.WebhookSecret != "db-secret" {
 		t.Errorf("WebhookSecret not overridden: %q", c.WebhookSecret)

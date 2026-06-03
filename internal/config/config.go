@@ -164,7 +164,11 @@ func (c *Config) ApplyOverrides(settings map[string]string) {
 		c.ClaudeEnabled = parseBool(v, c.ClaudeEnabled)
 	}
 	if v, ok := settings["claude_model"]; ok {
-		c.ClaudeModel = v
+		if strings.TrimSpace(v) == "" {
+			c.ClaudeModel = DefaultClaudeModel
+		} else {
+			c.ClaudeModel = v
+		}
 	}
 	if v, ok := settings["claude_api_key"]; ok {
 		c.ClaudeAPIKey = v
@@ -173,10 +177,18 @@ func (c *Config) ApplyOverrides(settings map[string]string) {
 		c.ClaudeBaseURL = v
 	}
 	if v, ok := settings["claude_home"]; ok {
-		c.ClaudeHome = v
+		if strings.TrimSpace(v) == "" {
+			c.ClaudeHome = DefaultClaudeHome
+		} else {
+			c.ClaudeHome = v
+		}
 	}
 	if v, ok := settings["cc_switch_config_dir"]; ok {
-		c.CCSwitchConfigDir = v
+		if strings.TrimSpace(v) == "" {
+			c.CCSwitchConfigDir = DefaultCCSwitchDir
+		} else {
+			c.CCSwitchConfigDir = v
+		}
 	}
 	if v, ok := settings["cc_switch_provider_id"]; ok {
 		c.CCSwitchProvider = v

@@ -142,17 +142,22 @@ func (r *Runner) Ask(ctx context.Context, sessionID, worktree, question string) 
 func (r *Runner) Status(ctx context.Context) (string, error) {
 	parts := []string{}
 	failures := []string{}
-	if current, err := r.run(ctx, "", r.ccSwitchBin, []string{"--app", "claude", "provider", "current"}, ""); err == nil {
-		parts = append(parts, "cc-switch current:\n"+strings.TrimSpace(string(current)))
+	requireProvider := strings.TrimSpace(r.ccSwitchProvider) != ""
+	if requireProvider {
+		if current, err := r.run(ctx, "", r.ccSwitchBin, []string{"--app", "claude", "provider", "current"}, ""); err == nil {
+			parts = append(parts, "cc-switch current:\n"+strings.TrimSpace(string(current)))
+		} else {
+			parts = append(parts, "cc-switch current failed: "+err.Error())
+			failures = append(failures, "cc-switch current: "+err.Error())
+		}
+		if envCheck, err := r.run(ctx, "", r.ccSwitchBin, []string{"--app", "claude", "env", "check"}, ""); err == nil {
+			parts = append(parts, "cc-switch env:\n"+strings.TrimSpace(string(envCheck)))
+		} else {
+			parts = append(parts, "cc-switch env failed: "+err.Error())
+			failures = append(failures, "cc-switch env: "+err.Error())
+		}
 	} else {
-		parts = append(parts, "cc-switch current failed: "+err.Error())
-		failures = append(failures, "cc-switch current: "+err.Error())
-	}
-	if envCheck, err := r.run(ctx, "", r.ccSwitchBin, []string{"--app", "claude", "env", "check"}, ""); err == nil {
-		parts = append(parts, "cc-switch env:\n"+strings.TrimSpace(string(envCheck)))
-	} else {
-		parts = append(parts, "cc-switch env failed: "+err.Error())
-		failures = append(failures, "cc-switch env: "+err.Error())
+		parts = append(parts, "cc-switch: skipped (provider id not configured; using Claude API env)")
 	}
 	if auth, err := r.run(ctx, "", r.bin, []string{"auth", "status"}, ""); err == nil {
 		parts = append(parts, "claude auth:\n"+strings.TrimSpace(string(auth)))

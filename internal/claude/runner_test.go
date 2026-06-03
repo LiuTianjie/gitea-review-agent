@@ -115,7 +115,34 @@ func TestRunnerStatusReturnsErrorWhenChecksFail(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Status err = nil, want failure")
 	}
-	if !strings.Contains(status, "cc-switch current failed") || !strings.Contains(status, "claude auth failed") {
+	if !strings.Contains(status, "cc-switch: skipped") || !strings.Contains(status, "claude auth failed") {
 		t.Fatalf("status missing failure details:\n%s", status)
+	}
+}
+
+func TestRunnerStatusDoesNotRequireCCSwitchWithoutProvider(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "claude.log")
+	bin := writeClaudeStub(t, logPath)
+	t.Setenv("STUB_SLEEP", "")
+	missing := filepath.Join(t.TempDir(), "missing-cc-switch")
+	r := New(Options{Bin: bin, CCSwitchBin: missing, Timeout: time.Second})
+	status, err := r.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status err = %v, want nil when cc-switch provider is not configured\n%s", err, status)
+	}
+	if !strings.Contains(status, "cc-switch: skipped") || !strings.Contains(status, "claude auth") {
+		t.Fatalf("status missing optional cc-switch/auth details:\n%s", status)
+	}
+}
+
+func TestRunnerStatusRequiresCCSwitchWhenProviderConfigured(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "claude.log")
+	bin := writeClaudeStub(t, logPath)
+	t.Setenv("STUB_SLEEP", "")
+	missing := filepath.Join(t.TempDir(), "missing-cc-switch")
+	r := New(Options{Bin: bin, CCSwitchBin: missing, CCSwitchProvider: "relay", Timeout: time.Second})
+	status, err := r.Status(context.Background())
+	if err == nil {
+		t.Fatalf("Status err = nil, want cc-switch failure when provider is configured\n%s", status)
 	}
 }

@@ -193,6 +193,31 @@
   .ok { color: var(--green); }
   .err { color: var(--red); }
   .muted { color: var(--muted); font-size: 12px; }
+  .field-help {
+    margin: 6px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  details.advanced {
+    margin-top: 14px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel-subtle);
+  }
+  details.advanced summary {
+    min-height: 42px;
+    padding: 0 14px;
+    display: flex;
+    align-items: center;
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 680;
+    cursor: pointer;
+  }
+  details.advanced .advanced-body {
+    padding: 0 14px 14px;
+    border-top: 1px solid var(--line);
+  }
   .stats-grid {
     display: grid;
     grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -461,7 +486,7 @@
         <div class="empty-state">选择一个任务查看日志详情</div>
       </aside>
     </div>
-  </section>
+	  </section>
   </div>
 
   <div id="tab-analytics" class="tab-panel">
@@ -616,25 +641,27 @@
       <div>
         <label for="claude_base_url">Claude Base URL</label>
         <input id="claude_base_url" placeholder="中转地址，留空使用默认">
+        <p class="field-help">使用 API Key + Base URL 时，不需要配置 cc-switch provider。</p>
       </div>
     </div>
     <div class="row">
       <div>
         <label for="claude_home">Claude Home</label>
-        <input id="claude_home" placeholder="/claude-home">
+        <input id="claude_home" placeholder="默认 /claude-home">
       </div>
       <div>
         <label for="cc_switch_config_dir">cc-switch 配置目录</label>
-        <input id="cc_switch_config_dir" placeholder="/cc-switch">
+        <input id="cc_switch_config_dir" placeholder="默认 /cc-switch">
       </div>
     </div>
-    <div class="row">
-      <div>
-        <label for="cc_switch_provider_id">cc-switch Provider ID</label>
-        <input id="cc_switch_provider_id" placeholder="留空则不自动 switch">
+    <details class="advanced">
+      <summary>高级：使用已配置的 cc-switch provider</summary>
+      <div class="advanced-body">
+        <label for="cc_switch_provider_id">Provider ID</label>
+        <input id="cc_switch_provider_id" placeholder="通常留空；仅在需要自动切换 cc-switch provider 时填写">
+        <p class="field-help">Provider ID 是 cc-switch 配置里的 provider 标识，不是 Claude API Key，也不是 Base URL。留空时服务直接使用上面的 Claude API 配置。</p>
       </div>
-      <div></div>
-    </div>
+    </details>
   </section>
 
   <section>
@@ -673,6 +700,7 @@
     codex: ["model","codex_auth_mode","codex_sandbox_mode","codex_api_key"],
     claude: ["claude_enabled","claude_model","claude_api_key","claude_base_url","claude_home","cc_switch_config_dir","cc_switch_provider_id"]
   };
+  var DEFAULTS = {claude_model:"sonnet", claude_home:"/claude-home", cc_switch_config_dir:"/cc-switch"};
   var SECRETS = {gitea_token:1, webhook_secret:1, codex_api_key:1, claude_api_key:1};
   var REDACTED = "***set***";
   var jobCache = [];
@@ -709,35 +737,36 @@
       FIELDS.forEach(function(k){
         var el = $(k); if (!el) return;
         var v = s[k] != null ? s[k] : "";
+        if (v === "" && DEFAULTS[k]) v = DEFAULTS[k];
         el.value = v;
       });
       show($("settingsMsg"), "已加载", true);
     }).catch(function(e){ show($("settingsMsg"), "加载失败：" + e, false); });
   }
 
-	  function saveSettings(keys, label){
-	    var payload = {};
-	    (keys || FIELDS).forEach(function(k){
-	      var el = $(k); if (!el) return;
-	      var v = el.value;
-	      // 不重复提交密钥的脱敏占位符；服务端也会跳过，这里保持请求干净。
-	      if (SECRETS[k] && v === REDACTED) return;
-	      payload[k] = v;
-	    });
-	    if (Object.keys(payload).length === 0) {
-	      show($("settingsMsg"), "没有需要保存的字段", true);
-	      return;
-	    }
-	    fetch("/admin/api/settings", {
-	      method: "POST",
-	      headers: {"Content-Type": "application/json"},
-	      body: JSON.stringify({settings: payload})
-	    }).then(function(r){ return r.json().then(function(b){ return {ok:r.ok, b:b}; }); })
-	      .then(function(res){
-	        if (res.ok) { show($("settingsMsg"), "已保存 " + (label || "设置") + "（" + (res.b.updated||0) + " 项）；后续 review 会使用 reviewer 相关新值", true); loadSettings(); loadEffectiveConfig(); checkStatus(); }
-	        else { show($("settingsMsg"), "保存失败：" + (res.b.error||""), false); }
-	      }).catch(function(e){ show($("settingsMsg"), "保存失败：" + e, false); });
-	  }
+  function saveSettings(keys, label){
+    var payload = {};
+    (keys || FIELDS).forEach(function(k){
+      var el = $(k); if (!el) return;
+      var v = el.value;
+      // 不重复提交密钥的脱敏占位符；服务端也会跳过，这里保持请求干净。
+      if (SECRETS[k] && v === REDACTED) return;
+      payload[k] = v;
+    });
+    if (Object.keys(payload).length === 0) {
+      show($("settingsMsg"), "没有需要保存的字段", true);
+      return;
+    }
+    fetch("/admin/api/settings", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({settings: payload})
+    }).then(function(r){ return r.json().then(function(b){ return {ok:r.ok, b:b}; }); })
+      .then(function(res){
+        if (res.ok) { show($("settingsMsg"), "已保存 " + (label || "设置") + "（" + (res.b.updated||0) + " 项）；后续 review 会使用 reviewer 相关新值", true); loadSettings(); loadEffectiveConfig(); checkStatus(); }
+        else { show($("settingsMsg"), "保存失败：" + (res.b.error||""), false); }
+      }).catch(function(e){ show($("settingsMsg"), "保存失败：" + e, false); });
+  }
 
   function uploadAuth(){
     var f = $("authFile").files[0];
@@ -772,7 +801,7 @@
         "<p><strong>Gitea 令牌：</strong>" + (c.gitea_token_set ? "已加载" : "未加载") +
         "　<strong>Webhook 密钥：</strong>" + (c.webhook_secret_set ? "已加载" : "未加载") + "</p>" +
         "<p><strong>模型：</strong><code>" + esc(c.model || "") + "</code>　<strong>鉴权：</strong><code>" + esc(c.codex_auth_mode || "") + "</code>　<strong>沙箱：</strong><code>" + esc(c.codex_sandbox_mode || "") + "</code>　<strong>并发：</strong><code>" + esc(c.concurrency) + "</code></p>" +
-        "<p><strong>Claude：</strong><code>" + esc(c.claude_enabled ? "enabled" : "disabled") + "</code>　<strong>模型：</strong><code>" + esc(c.claude_model || "") + "</code>　<strong>API Key：</strong>" + (c.claude_api_key_set ? "已加载" : "未加载") + "　<strong>Base URL：</strong><code>" + esc(c.claude_base_url || "默认") + "</code>　<strong>cc-switch：</strong><code>" + esc(c.cc_switch_provider_id || "不自动切换") + "</code></p>" +
+        "<p><strong>Claude：</strong><code>" + esc(c.claude_enabled ? "enabled" : "disabled") + "</code>　<strong>模型：</strong><code>" + esc(c.claude_model || "") + "</code>　<strong>API Key：</strong>" + (c.claude_api_key_set ? "已加载" : "未加载") + "　<strong>Base URL：</strong><code>" + esc(c.claude_base_url || "默认") + "</code>　<strong>cc-switch provider：</strong><code>" + esc(c.cc_switch_provider_id || "未使用") + "</code></p>" +
         "<p><strong>配置来源：</strong><code>" + esc(c.config_source || "db-over-env") + "</code></p>" +
         "<p class='muted'>" + esc(c.runtime_reload_note || "") + "</p>";
       show($("effectiveMsg"), "已读取当前进程配置", true);
