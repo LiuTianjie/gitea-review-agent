@@ -176,6 +176,7 @@ func buildReviewers(cfg *config.Config) []model.Reviewer {
 			CCSwitchConfigDir: cfg.CCSwitchConfigDir,
 			CCSwitchProvider:  cfg.CCSwitchProvider,
 			Timeout:           cfg.Timeout,
+			MaxBudgetUSD:      cfg.ClaudeMaxBudgetUSD,
 		}))
 	}
 	return reviewers

@@ -22,7 +22,7 @@ func TestLoadEnvDefaults(t *testing.T) {
 		"WEBHOOK_SECRET", "ADMIN_PASSWORD", "TRIGGER_KEYWORDS", "CONCURRENCY",
 		"REPO_ALLOWLIST", "TIMEOUT", "SECRET_KEY", "CODEX_SANDBOX_MODE",
 		"CLAUDE_ENABLED", "CLAUDE_MODEL", "CLAUDE_API_KEY", "CLAUDE_BASE_URL",
-		"CLAUDE_HOME", "CC_SWITCH_CONFIG_DIR", "CC_SWITCH_PROVIDER_ID",
+		"CLAUDE_HOME", "CC_SWITCH_CONFIG_DIR", "CC_SWITCH_PROVIDER_ID", "CLAUDE_MAX_BUDGET_USD",
 	} {
 		t.Setenv(k, "")
 	}
@@ -55,6 +55,9 @@ func TestLoadEnvDefaults(t *testing.T) {
 	}
 	if c.CCSwitchConfigDir != DefaultCCSwitchDir {
 		t.Errorf("CCSwitchConfigDir = %q, want %q", c.CCSwitchConfigDir, DefaultCCSwitchDir)
+	}
+	if c.ClaudeMaxBudgetUSD != DefaultClaudeBudget {
+		t.Errorf("ClaudeMaxBudgetUSD = %g, want %g", c.ClaudeMaxBudgetUSD, DefaultClaudeBudget)
 	}
 	if c.Concurrency != DefaultConcurrency {
 		t.Errorf("Concurrency = %d, want %d", c.Concurrency, DefaultConcurrency)
@@ -96,6 +99,7 @@ func TestLoadEnvValues(t *testing.T) {
 		"CLAUDE_HOME":           "/tmp/claude",
 		"CC_SWITCH_CONFIG_DIR":  "/tmp/cc-switch",
 		"CC_SWITCH_PROVIDER_ID": "relay",
+		"CLAUDE_MAX_BUDGET_USD": "0.42",
 		"ADMIN_PASSWORD":        "hunter2",
 		"TRIGGER_KEYWORDS":      "/review, @bot , please-review",
 		"CONCURRENCY":           "5",
@@ -135,6 +139,9 @@ func TestLoadEnvValues(t *testing.T) {
 	}
 	if c.ClaudeHome != "/tmp/claude" || c.CCSwitchConfigDir != "/tmp/cc-switch" || c.CCSwitchProvider != "relay" {
 		t.Errorf("Claude paths/provider not loaded: home=%q ccdir=%q provider=%q", c.ClaudeHome, c.CCSwitchConfigDir, c.CCSwitchProvider)
+	}
+	if c.ClaudeMaxBudgetUSD != 0.42 {
+		t.Errorf("ClaudeMaxBudgetUSD = %g, want 0.42", c.ClaudeMaxBudgetUSD)
 	}
 	if c.AdminPassword != "hunter2" {
 		t.Errorf("AdminPassword = %q", c.AdminPassword)
@@ -180,20 +187,21 @@ func TestApplyOverrides(t *testing.T) {
 	}
 
 	c.ApplyOverrides(map[string]string{
-		"gitea_url":            "https://db.example.com",
-		"gitea_token":          "db-tok",
-		"model":                "db-model",
-		"codex_auth_mode":      "apikey",
-		"codex_api_key":        "sk-db",
-		"codex_sandbox_mode":   "workspace-write",
-		"claude_model":         "",
-		"claude_home":          "",
-		"cc_switch_config_dir": "",
-		"webhook_secret":       "db-secret",
-		"trigger_keywords":     "/lgtm,@review",
-		"concurrency":          "8",
-		"repo_allowlist":       "a/b",
-		"timeout":              "5m",
+		"gitea_url":             "https://db.example.com",
+		"gitea_token":           "db-tok",
+		"model":                 "db-model",
+		"codex_auth_mode":       "apikey",
+		"codex_api_key":         "sk-db",
+		"codex_sandbox_mode":    "workspace-write",
+		"claude_model":          "",
+		"claude_home":           "",
+		"cc_switch_config_dir":  "",
+		"claude_max_budget_usd": "0.5",
+		"webhook_secret":        "db-secret",
+		"trigger_keywords":      "/lgtm,@review",
+		"concurrency":           "8",
+		"repo_allowlist":        "a/b",
+		"timeout":               "5m",
 	})
 
 	if c.GiteaURL != "https://db.example.com" {
@@ -222,6 +230,9 @@ func TestApplyOverrides(t *testing.T) {
 	}
 	if c.CCSwitchConfigDir != DefaultCCSwitchDir {
 		t.Errorf("CCSwitchConfigDir blank override = %q, want default", c.CCSwitchConfigDir)
+	}
+	if c.ClaudeMaxBudgetUSD != 0.5 {
+		t.Errorf("ClaudeMaxBudgetUSD not overridden: %g", c.ClaudeMaxBudgetUSD)
 	}
 	if c.WebhookSecret != "db-secret" {
 		t.Errorf("WebhookSecret not overridden: %q", c.WebhookSecret)
@@ -324,6 +335,10 @@ func TestValidateBadConcurrencyAndTimeout(t *testing.T) {
 	c = &Config{CodexAuthMode: AuthModeAuthFile, Concurrency: 1, Timeout: 0}
 	if err := c.Validate(); err == nil {
 		t.Error("Validate(timeout=0) = nil, want error")
+	}
+	c = &Config{CodexAuthMode: AuthModeAuthFile, Concurrency: 1, Timeout: time.Minute, ClaudeMaxBudgetUSD: -0.1}
+	if err := c.Validate(); err == nil {
+		t.Error("Validate(claude budget < 0) = nil, want error")
 	}
 }
 

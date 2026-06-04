@@ -97,6 +97,7 @@ Env vars (all optional except `ADMIN_PASSWORD`; the console can set the rest):
 | `CLAUDE_MODEL` | `sonnet` | Claude model/alias passed to Claude Code |
 | `CLAUDE_API_KEY` | — | optional Anthropic or relay key; configurable in console |
 | `CLAUDE_BASE_URL` | — | optional Anthropic-compatible relay URL; configurable in console |
+| `CLAUDE_MAX_BUDGET_USD` | `0.3` | per Claude Code run budget cap; set `0` to disable |
 | `CC_SWITCH_CONFIG_DIR` | `/cc-switch` | cc-switch provider/proxy config directory |
 | `CC_SWITCH_PROVIDER_ID` | — | optional provider id to switch before Claude runs |
 | `CONCURRENCY` | `2` | worker count |

@@ -55,7 +55,10 @@ func TestRunnerReview(t *testing.T) {
 	worktree := t.TempDir()
 	home := t.TempDir()
 	ccDir := t.TempDir()
-	r := New(Options{Bin: bin, ClaudeHome: home, CCSwitchConfigDir: ccDir, Model: "sonnet", APIKey: "ak-claude", BaseURL: "https://relay.example"})
+	r := New(Options{
+		Bin: bin, ClaudeHome: home, CCSwitchConfigDir: ccDir, Model: "sonnet",
+		APIKey: "ak-claude", BaseURL: "https://relay.example", MaxBudgetUSD: 0.3,
+	})
 	res, err := r.Review(context.Background(), model.CodexInput{Worktree: worktree, BaseRef: "main"})
 	if err != nil {
 		t.Fatalf("Review: %v", err)
@@ -78,10 +81,14 @@ func TestRunnerReview(t *testing.T) {
 		"--permission-mode",
 		"--allowedTools",
 		"Bash(git diff:*)",
+		"--max-budget-usd",
+		"0.3",
 		"not a top-N review",
 		"--model",
 		"sonnet",
-		"git diff main...HEAD",
+		"git diff --name-only main...HEAD",
+		"git diff main...HEAD -- <path>",
+		"Do NOT use shell redirection",
 		"HOME=" + home,
 		"CC_SWITCH_CONFIG_DIR=" + ccDir,
 		"ANTHROPIC_API_KEY=ak-claude",
@@ -100,6 +107,23 @@ func TestRunnerReview(t *testing.T) {
 	}
 }
 
+func TestRunnerReviewOmitsBudgetWhenDisabled(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "claude.log")
+	bin := writeClaudeStub(t, logPath)
+
+	r := New(Options{Bin: bin, Model: "sonnet", MaxBudgetUSD: 0})
+	if _, err := r.Review(context.Background(), model.CodexInput{Worktree: t.TempDir(), BaseRef: "main"}); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if strings.Contains(string(raw), "--max-budget-usd") {
+		t.Fatalf("budget arg should be omitted when disabled:\n%s", raw)
+	}
+}
+
 func TestRunnerReviewTimeout(t *testing.T) {
 	bin := writeClaudeStub(t, filepath.Join(t.TempDir(), "claude.log"))
 	t.Setenv("STUB_SLEEP", "5")
@@ -107,6 +131,13 @@ func TestRunnerReviewTimeout(t *testing.T) {
 	_, err := r.Review(context.Background(), model.CodexInput{Worktree: t.TempDir(), BaseRef: "main"})
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("err = %v, want timeout", err)
+	}
+}
+
+func TestParseReviewOutputReportsClaudeAPIError(t *testing.T) {
+	_, _, err := parseReviewOutput([]byte(`{"type":"result","is_error":true,"api_error_status":503,"result":"API Error: no available channel"}`))
+	if err == nil || !strings.Contains(err.Error(), "claude api error 503: API Error: no available channel") {
+		t.Fatalf("err = %v, want claude api error", err)
 	}
 }
 

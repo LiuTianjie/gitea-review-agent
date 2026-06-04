@@ -291,6 +291,7 @@ func (c *Console) handleEffectiveConfig(w http.ResponseWriter, r *http.Request) 
 		"claude_home":           cfg.ClaudeHome,
 		"cc_switch_config_dir":  cfg.CCSwitchConfigDir,
 		"cc_switch_provider_id": cfg.CCSwitchProvider,
+		"claude_max_budget_usd": cfg.ClaudeMaxBudgetUSD,
 		"concurrency":           cfg.Concurrency,
 		"trigger_keywords":      strings.Join(cfg.TriggerKeywords, ","),
 		"repo_allowlist":        strings.Join(cfg.RepoAllowlist, ","),

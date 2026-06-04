@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -31,6 +32,7 @@ type Options struct {
 	CCSwitchConfigDir string
 	CCSwitchProvider  string
 	Timeout           time.Duration
+	MaxBudgetUSD      float64
 }
 
 type Runner struct {
@@ -43,6 +45,7 @@ type Runner struct {
 	ccSwitchConfigDir string
 	ccSwitchProvider  string
 	timeout           time.Duration
+	maxBudgetUSD      float64
 }
 
 var _ model.Reviewer = (*Runner)(nil)
@@ -73,6 +76,7 @@ func New(opts Options) *Runner {
 		ccSwitchConfigDir: opts.CCSwitchConfigDir,
 		ccSwitchProvider:  opts.CCSwitchProvider,
 		timeout:           timeout,
+		maxBudgetUSD:      opts.MaxBudgetUSD,
 	}
 }
 
@@ -92,6 +96,7 @@ func (r *Runner) Review(ctx context.Context, in model.CodexInput) (*model.Review
 		"--permission-mode", "dontAsk",
 		"--allowedTools", readOnlyTools,
 	}
+	args = r.appendBudgetArg(args)
 	if r.model != "" {
 		args = append(args, "--model", r.model)
 	}
@@ -128,6 +133,7 @@ func (r *Runner) Ask(ctx context.Context, sessionID, worktree, question string) 
 		"--permission-mode", "dontAsk",
 		"--allowedTools", readOnlyTools,
 	}
+	args = r.appendBudgetArg(args)
 	if r.model != "" {
 		args = append(args, "--model", r.model)
 	}
@@ -137,6 +143,13 @@ func (r *Runner) Ask(ctx context.Context, sessionID, worktree, question string) 
 		return "", err
 	}
 	return parseTextOutput(out)
+}
+
+func (r *Runner) appendBudgetArg(args []string) []string {
+	if r.maxBudgetUSD <= 0 {
+		return args
+	}
+	return append(args, "--max-budget-usd", strconv.FormatFloat(r.maxBudgetUSD, 'f', -1, 64))
 }
 
 func (r *Runner) Status(ctx context.Context) (string, error) {
@@ -248,15 +261,28 @@ func parseReviewOutput(out []byte) (*model.ReviewResult, string, error) {
 		return &direct, "", nil
 	}
 	var wrapped struct {
-		Result    any    `json:"result"`
-		SessionID string `json:"session_id"`
+		Result         any    `json:"result"`
+		SessionID      string `json:"session_id"`
+		IsError        bool   `json:"is_error"`
+		APIErrorStatus int    `json:"api_error_status"`
 	}
 	if err := json.Unmarshal(bytes.TrimSpace(out), &wrapped); err != nil {
 		return nil, "", fmt.Errorf("claude review: parse output: %w", err)
 	}
+	if wrapped.IsError {
+		msg := resultMessage(wrapped.Result)
+		if wrapped.APIErrorStatus != 0 {
+			return nil, "", fmt.Errorf("claude api error %d: %s", wrapped.APIErrorStatus, msg)
+		}
+		return nil, "", fmt.Errorf("claude api error: %s", msg)
+	}
 	switch v := wrapped.Result.(type) {
 	case string:
-		if err := json.Unmarshal([]byte(strings.TrimSpace(v)), &direct); err != nil {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return nil, "", fmt.Errorf("claude review: empty result string")
+		}
+		if err := json.Unmarshal([]byte(v), &direct); err != nil {
 			return nil, "", fmt.Errorf("claude review: parse result string: %w", err)
 		}
 	case map[string]any:
@@ -268,6 +294,27 @@ func parseReviewOutput(out []byte) (*model.ReviewResult, string, error) {
 		return nil, "", fmt.Errorf("claude review: missing structured result")
 	}
 	return &direct, wrapped.SessionID, nil
+}
+
+func resultMessage(v any) string {
+	switch x := v.(type) {
+	case string:
+		return trimForError(x)
+	case map[string]any:
+		data, _ := json.Marshal(x)
+		return trimForError(string(data))
+	default:
+		return trimForError(fmt.Sprint(x))
+	}
+}
+
+func trimForError(s string) string {
+	s = strings.TrimSpace(s)
+	const max = 600
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "...(truncated)"
 }
 
 func parseTextOutput(out []byte) (string, error) {
@@ -306,13 +353,17 @@ func buildReviewPrompt(baseRef, note string, resume bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, `You are a senior code reviewer %s.
 
-Run `+"`git diff %s...HEAD`"+` yourself to obtain the full pull-request diff from the target branch to the current HEAD.
-Use that diff as the entrypoint, and inspect related functions, types, imports, call sites, and nearby files when needed to understand impact.
+Use the pull-request diff from the target branch to the current HEAD as the entrypoint.
+Start with simple read-only commands such as `+"`git diff --name-only %s...HEAD`"+`, `+"`git diff --stat %s...HEAD`"+`, and `+"`git diff --numstat %s...HEAD`"+`.
+Inspect concrete file diffs with `+"`git diff %s...HEAD -- <path>`"+` and related source with Read/Grep/Glob.
+For large pull requests, review changed files in batches; do not print or save the whole diff at once.
 
 Hard rules:
 - Do NOT build, run, compile, or test the code.
 - Do NOT modify any files.
 - Only read-only inspection commands are allowed.
+- Do NOT use shell redirection, pipes, `+"`&&`"+`, `+"`;`"+`, command substitution, or temp files. Run one allowed read-only command at a time.
+- Allowed Bash commands are limited to simple git inspection commands like `+"`git diff ...`"+`, `+"`git show ...`"+`, `+"`git status ...`"+`, and `+"`git ls-files ...`"+`.
 - Use the allowed read-only tools to inspect the diff and relevant surrounding code; do not rely on filenames alone.
 - Report only risks introduced or exposed by this PR.
 - This is not a top-N review. Continue until every changed file and its relevant call paths have been checked.
@@ -323,7 +374,7 @@ Hard rules:
 - For every finding include path, line, side, severity, title, body, and a tags array with zero to six short free-form tags.
 - Include resolved_fingerprints for prior findings that are clearly fixed.
 
-Return ONLY JSON conforming to the provided schema.`, verb, baseRef)
+Return ONLY JSON conforming to the provided schema.`, verb, baseRef, baseRef, baseRef, baseRef)
 	if strings.TrimSpace(note) != "" {
 		fmt.Fprintf(&b, "\n\nAdditional context:\n%s", note)
 	}
