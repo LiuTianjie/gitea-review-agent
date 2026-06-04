@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -238,6 +241,8 @@ func (c *fakeCodex) Status(context.Context) (string, error) { return "ok", nil }
 type fakeGitea struct {
 	diff         model.DiffMap
 	diffCalls    int
+	comments     []model.PullComment
+	commentCalls int
 	lastEvent    model.ReviewEventType
 	lastComments []model.ReviewComment
 	dismissed    []int64
@@ -257,6 +262,10 @@ func (g *fakeGitea) GetPullRequestStatus(context.Context, model.PRRef) (model.Pu
 func (g *fakeGitea) GetDiff(context.Context, model.PRRef) (model.DiffMap, error) {
 	g.diffCalls++
 	return g.diff, nil
+}
+func (g *fakeGitea) ListIssueComments(context.Context, model.PRRef) ([]model.PullComment, error) {
+	g.commentCalls++
+	return g.comments, nil
 }
 func (g *fakeGitea) PostReview(_ context.Context, _ model.PRRef, _ string, ev model.ReviewEventType, _ string, cs []model.ReviewComment) (int64, error) {
 	if g.postErr != nil {
@@ -282,6 +291,16 @@ func (g *fakeGitea) DismissReview(_ context.Context, _ model.PRRef, id int64, _ 
 
 // ---------- helpers ----------
 
+func runTestGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+}
+
 func diffWith(path string, lines ...int) model.DiffMap {
 	nl := map[int]bool{}
 	for _, l := range lines {
@@ -303,6 +322,38 @@ func prEvent(action, head string) *model.Job {
 }
 
 // ---------- tests ----------
+
+func TestInspectWorktreeDiffUsesBaseToHeadThreeDotDiff(t *testing.T) {
+	dir := t.TempDir()
+	runTestGit(t, dir, "init", "-b", "main")
+	runTestGit(t, dir, "config", "user.email", "bot@example.com")
+	runTestGit(t, dir, "config", "user.name", "Bot")
+	if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write base: %v", err)
+	}
+	runTestGit(t, dir, "add", ".")
+	runTestGit(t, dir, "commit", "-m", "base")
+	runTestGit(t, dir, "checkout", "-b", "feature")
+	for _, name := range []string{"a.txt", "b.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(name+"\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	runTestGit(t, dir, "add", ".")
+	runTestGit(t, dir, "commit", "-m", "feature")
+
+	summary, err := inspectWorktreeDiff(context.Background(), dir, "main")
+	if err != nil {
+		t.Fatalf("inspectWorktreeDiff: %v", err)
+	}
+	if summary.BaseRef != "main" || summary.FileCount != 2 {
+		t.Fatalf("summary = %+v, want base main and 2 files", summary)
+	}
+	formatted := formatWorktreeDiffSummary(summary)
+	if !strings.Contains(formatted, "base=main") || !strings.Contains(formatted, "files=2") {
+		t.Fatalf("formatted summary missing key data: %s", formatted)
+	}
+}
 
 func TestReview_Opened_InlineAndRequestChanges(t *testing.T) {
 	st := newFakeStore()
@@ -348,7 +399,13 @@ func TestReview_TwoReviewersSharePreparedWorktreeAndDiff(t *testing.T) {
 			Severity: model.SeverityHigh, Title: "bad math", Body: "boom",
 		}},
 	}}
-	gt := &fakeGitea{diff: diffWith("calc.go", 19)}
+	gt := &fakeGitea{
+		diff: diffWith("calc.go", 19),
+		comments: []model.PullComment{{
+			User: "zijiaw",
+			Body: "@bot-tifenxia 对照 agents.md 整体审视接口实现，检查是否符合开发规范",
+		}},
+	}
 	o := &Orchestrator{Store: st, Cache: gc, Reviewers: []model.Reviewer{codexReviewer, claudeReviewer}, Gitea: gt}
 
 	if err := o.Process(context.Background(), prEvent("opened", "aaa111")); err != nil {
@@ -360,8 +417,17 @@ func TestReview_TwoReviewersSharePreparedWorktreeAndDiff(t *testing.T) {
 	if gt.diffCalls != 1 {
 		t.Fatalf("GetDiff calls = %d, want 1", gt.diffCalls)
 	}
+	if gt.commentCalls != 1 {
+		t.Fatalf("ListIssueComments calls = %d, want 1", gt.commentCalls)
+	}
 	if codexReviewer.lastIn.Worktree == "" || codexReviewer.lastIn.Worktree != claudeReviewer.lastIn.Worktree {
 		t.Fatalf("reviewers did not share worktree: codex=%q claude=%q", codexReviewer.lastIn.Worktree, claudeReviewer.lastIn.Worktree)
+	}
+	for _, reviewer := range []*fakeCodex{codexReviewer, claudeReviewer} {
+		if !strings.Contains(reviewer.lastIn.Note, "PR discussion context") ||
+			!strings.Contains(reviewer.lastIn.Note, "agents.md") {
+			t.Fatalf("%s reviewer missing PR comment context: %q", reviewer.Name(), reviewer.lastIn.Note)
+		}
 	}
 	if len(gt.reviews) != 2 {
 		t.Fatalf("posted reviews = %d, want 2", len(gt.reviews))

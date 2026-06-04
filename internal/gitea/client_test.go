@@ -148,6 +148,40 @@ func TestPostComment_HTTP(t *testing.T) {
 	}
 }
 
+func TestListIssueComments_HTTP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			t.Errorf("method = %s, want GET", r.Method)
+		}
+		if r.URL.Path != "/api/v1/repos/acme/widget/issues/42/comments" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		if r.URL.Query().Get("limit") != "20" {
+			t.Errorf("limit = %q, want 20", r.URL.Query().Get("limit"))
+		}
+		io.WriteString(w, `[
+			{"id":1,"body":" @bot check agents.md ","user":{"username":"zijiaw"},"created_at":"2026-06-03T12:00:00Z"},
+			{"id":2,"body":"second","user":{"login":"alice"}}
+		]`)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "T", srv.Client())
+	comments, err := c.ListIssueComments(context.Background(), testPR())
+	if err != nil {
+		t.Fatalf("ListIssueComments: %v", err)
+	}
+	if len(comments) != 2 {
+		t.Fatalf("comments = %d, want 2", len(comments))
+	}
+	if comments[0].ID != 1 || comments[0].User != "zijiaw" || comments[0].Body != "@bot check agents.md" || comments[0].CreatedAt.IsZero() {
+		t.Fatalf("comments[0] = %+v", comments[0])
+	}
+	if comments[1].User != "alice" {
+		t.Fatalf("comments[1].User = %q, want alice", comments[1].User)
+	}
+}
+
 func TestListReviews_HTTP(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/repos/acme/widget/pulls/42/reviews" {

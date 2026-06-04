@@ -2,11 +2,13 @@
 package review
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"os/exec"
 	"strings"
 
 	"github.com/turning4th/codex-gitea/internal/model"
@@ -29,6 +31,13 @@ type Orchestrator struct {
 }
 
 var errPullRequestClosed = errors.New("pull request is closed or merged")
+
+type worktreeDiffSummary struct {
+	BaseRef   string
+	HeadSHA   string
+	FileCount int
+	Sample    []string
+}
 
 func (o *Orchestrator) logf(format string, args ...any) {
 	if o.Logger != nil {
@@ -124,6 +133,71 @@ func (o *Orchestrator) handlePR(ctx context.Context, jobID int64, ev *model.Webh
 	}
 }
 
+func inspectWorktreeDiff(ctx context.Context, worktree, baseRef string) (worktreeDiffSummary, error) {
+	if strings.TrimSpace(baseRef) == "" {
+		baseRef = "main"
+	}
+	head, err := runGitOutput(ctx, worktree, "rev-parse", "--short=12", "HEAD")
+	if err != nil {
+		return worktreeDiffSummary{}, fmt.Errorf("rev-parse head: %w", err)
+	}
+	filesRaw, err := runGitOutput(ctx, worktree, "diff", "--name-only", baseRef+"...HEAD")
+	if err != nil {
+		return worktreeDiffSummary{}, fmt.Errorf("diff --name-only %s...HEAD: %w", baseRef, err)
+	}
+	files := nonEmptyLines(filesRaw)
+	summary := worktreeDiffSummary{
+		BaseRef:   baseRef,
+		HeadSHA:   strings.TrimSpace(head),
+		FileCount: len(files),
+	}
+	if len(files) > 5 {
+		summary.Sample = files[:5]
+	} else {
+		summary.Sample = files
+	}
+	return summary, nil
+}
+
+func runGitOutput(ctx context.Context, worktree string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = worktree
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg != "" {
+			return "", fmt.Errorf("%w: %s", err, msg)
+		}
+		return "", err
+	}
+	return stdout.String(), nil
+}
+
+func nonEmptyLines(raw string) []string {
+	lines := strings.Split(raw, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func formatWorktreeDiffSummary(summary worktreeDiffSummary) string {
+	msg := fmt.Sprintf("worktree diff: base=%s head=%s files=%d", summary.BaseRef, summary.HeadSHA, summary.FileCount)
+	if len(summary.Sample) > 0 {
+		msg += " sample=" + strings.Join(summary.Sample, ", ")
+		if summary.FileCount > len(summary.Sample) {
+			msg += fmt.Sprintf(" (+%d more)", summary.FileCount-len(summary.Sample))
+		}
+	}
+	return msg
+}
+
 func (o *Orchestrator) ensurePullRequestOpen(ctx context.Context, jobID int64, pr model.PRRef) error {
 	status, err := o.Gitea.GetPullRequestStatus(ctx, pr)
 	if err != nil {
@@ -179,18 +253,32 @@ func (o *Orchestrator) review(ctx context.Context, jobID int64, ev *model.Webhoo
 		}
 	}()
 	o.jobLog(ctx, jobID, "git", "worktree ready")
+	if summary, err := inspectWorktreeDiff(ctx, worktree, ev.BaseRef); err != nil {
+		o.jobLog(ctx, jobID, "git", "worktree diff summary failed: "+err.Error())
+	} else {
+		o.jobLog(ctx, jobID, "git", formatWorktreeDiffSummary(summary))
+	}
 
 	o.jobLog(ctx, jobID, "gitea", "fetching PR diff")
 	diff, err := o.Gitea.GetDiff(ctx, pr)
 	if err != nil {
 		return fmt.Errorf("get diff: %w", err)
 	}
-	o.jobLog(ctx, jobID, "gitea", "diff fetched")
+	o.jobLog(ctx, jobID, "gitea", fmt.Sprintf("diff fetched: files=%d", len(diff.Files)))
+
+	o.jobLog(ctx, jobID, "gitea", "fetching PR comments")
+	discussion, err := o.Gitea.ListIssueComments(ctx, pr)
+	if err != nil {
+		o.jobLog(ctx, jobID, "gitea", "PR comments unavailable: "+err.Error())
+		discussion = nil
+	} else {
+		o.jobLog(ctx, jobID, "gitea", fmt.Sprintf("PR comments fetched: %d", len(discussion)))
+	}
 
 	var errs []error
 	successes := 0
 	for _, reviewer := range o.reviewers() {
-		if err := o.runReviewer(ctx, jobID, ev, isUpdate, pull.ID, worktree, diff, reviewer); err != nil {
+		if err := o.runReviewer(ctx, jobID, ev, isUpdate, pull.ID, worktree, diff, discussion, reviewer); err != nil {
 			if errors.Is(err, errPullRequestClosed) {
 				o.jobLog(ctx, jobID, "skip", "PR closed or merged; stopping remaining reviewers")
 				break
@@ -207,7 +295,7 @@ func (o *Orchestrator) review(ctx context.Context, jobID int64, ev *model.Webhoo
 	return nil
 }
 
-func (o *Orchestrator) runReviewer(ctx context.Context, jobID int64, ev *model.WebhookEvent, isUpdate bool, pullID int64, worktree string, diff model.DiffMap, reviewer model.Reviewer) error {
+func (o *Orchestrator) runReviewer(ctx context.Context, jobID int64, ev *model.WebhookEvent, isUpdate bool, pullID int64, worktree string, diff model.DiffMap, discussion []model.PullComment, reviewer model.Reviewer) error {
 	pr := ev.PR
 	agent := reviewer.Name()
 	state, err := o.Store.GetReviewerState(ctx, pr, agent)
@@ -237,6 +325,7 @@ func (o *Orchestrator) runReviewer(ctx context.Context, jobID int64, ev *model.W
 		in.SessionID = sessionID
 		in.Note = fmt.Sprintf("PR head 已从 %s 更新到 %s。请基于 %s 重新审查当前 diff，并在摘要中说明之前报告的问题哪些已经修复。", shortSHA(prevHead), shortSHA(ev.HeadSHA), ev.BaseRef)
 	}
+	in.Note = appendCommentContextNote(in.Note, discussion)
 	in.Note = appendPriorFindingsNote(in.Note, priorOpen)
 
 	o.jobLog(ctx, jobID, agent, "review started")
@@ -323,6 +412,61 @@ func isClosedReviewError(err error) bool {
 	return strings.Contains(msg, "closed or merged pr") ||
 		strings.Contains(msg, "closed or merged pull request") ||
 		strings.Contains(msg, "can't submit review for a closed")
+}
+
+func appendCommentContextNote(note string, comments []model.PullComment) string {
+	context := formatCommentContext(comments)
+	if context == "" {
+		return note
+	}
+	if strings.TrimSpace(note) == "" {
+		return context
+	}
+	return strings.TrimSpace(note) + "\n\n" + context
+}
+
+func formatCommentContext(comments []model.PullComment) string {
+	if len(comments) == 0 {
+		return ""
+	}
+	const (
+		maxComments = 8
+		maxBody     = 800
+	)
+	start := 0
+	if len(comments) > maxComments {
+		start = len(comments) - maxComments
+	}
+	var b strings.Builder
+	b.WriteString("PR discussion context:\n")
+	b.WriteString("- The following recent PR issue-thread comments may contain human review requests, constraints, or clarifications.\n")
+	b.WriteString("- Use them to prioritize what to inspect, but only report findings that are supported by the current PR diff or related code evidence.\n")
+	wrote := false
+	for _, c := range comments[start:] {
+		body := strings.TrimSpace(c.Body)
+		if body == "" {
+			continue
+		}
+		user := strings.TrimSpace(c.User)
+		if user == "" {
+			user = "unknown"
+		}
+		body = strings.Join(strings.Fields(body), " ")
+		if len(body) > maxBody {
+			body = body[:maxBody] + "..."
+		}
+		if c.CreatedAt.IsZero() {
+			fmt.Fprintf(&b, "- %s: %s\n", user, body)
+			wrote = true
+			continue
+		}
+		fmt.Fprintf(&b, "- %s at %s: %s\n", user, c.CreatedAt.Format("2006-01-02 15:04:05"), body)
+		wrote = true
+	}
+	if !wrote {
+		return ""
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // handleComment answers a bot-directed question on a PR by resuming its session.

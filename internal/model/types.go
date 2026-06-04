@@ -85,6 +85,15 @@ func (s PullRequestStatus) Open() bool {
 	return !s.Merged && (s.State == "" || s.State == "open")
 }
 
+// PullComment is a regular issue-thread comment attached to a pull request.
+// It is used as review context, not as a finding source by itself.
+type PullComment struct {
+	ID        int64
+	User      string
+	Body      string
+	CreatedAt time.Time
+}
+
 // ---------- Webhook / Job ----------
 
 // WebhookEvent is the normalized result of parsing a Gitea webhook payload.
@@ -467,6 +476,7 @@ type CodexRunner interface {
 type GiteaClient interface {
 	GetPullRequestStatus(ctx context.Context, pr PRRef) (PullRequestStatus, error)
 	GetDiff(ctx context.Context, pr PRRef) (DiffMap, error)
+	ListIssueComments(ctx context.Context, pr PRRef) ([]PullComment, error)
 	PostReview(ctx context.Context, pr PRRef, commitID string, event ReviewEventType, body string, comments []ReviewComment) (reviewID int64, err error)
 	PostComment(ctx context.Context, pr PRRef, body string) (commentID int64, err error)
 	ListReviews(ctx context.Context, pr PRRef) ([]GiteaReview, error)
