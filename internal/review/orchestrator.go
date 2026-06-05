@@ -37,6 +37,8 @@ type worktreeDiffSummary struct {
 	HeadSHA   string
 	FileCount int
 	Sample    []string
+	Files     []string
+	Numstat   []string
 }
 
 func (o *Orchestrator) logf(format string, args ...any) {
@@ -146,10 +148,16 @@ func inspectWorktreeDiff(ctx context.Context, worktree, baseRef string) (worktre
 		return worktreeDiffSummary{}, fmt.Errorf("diff --name-only %s...HEAD: %w", baseRef, err)
 	}
 	files := nonEmptyLines(filesRaw)
+	numstatRaw, err := runGitOutput(ctx, worktree, "diff", "--numstat", baseRef+"...HEAD")
+	if err != nil {
+		return worktreeDiffSummary{}, fmt.Errorf("diff --numstat %s...HEAD: %w", baseRef, err)
+	}
 	summary := worktreeDiffSummary{
 		BaseRef:   baseRef,
 		HeadSHA:   strings.TrimSpace(head),
 		FileCount: len(files),
+		Files:     files,
+		Numstat:   nonEmptyLines(numstatRaw),
 	}
 	if len(files) > 5 {
 		summary.Sample = files[:5]
@@ -196,6 +204,52 @@ func formatWorktreeDiffSummary(summary worktreeDiffSummary) string {
 		}
 	}
 	return msg
+}
+
+func appendDiffInventoryNote(note string, summary worktreeDiffSummary) string {
+	if summary.FileCount == 0 && len(summary.Files) == 0 && len(summary.Numstat) == 0 {
+		return note
+	}
+	const maxInventoryLines = 200
+	var b strings.Builder
+	if strings.TrimSpace(note) != "" {
+		b.WriteString(strings.TrimSpace(note))
+		b.WriteString("\n\n")
+	}
+	b.WriteString("Current PR diff inventory (authoritative coverage checklist):\n")
+	fmt.Fprintf(&b, "- base: %s\n", summary.BaseRef)
+	fmt.Fprintf(&b, "- head: %s\n", summary.HeadSHA)
+	fmt.Fprintf(&b, "- changed_files: %d\n", summary.FileCount)
+	b.WriteString("- Use this list to make sure the first review covers every relevant changed file and its risky call paths. Do not stop after the first valid issue.\n")
+	if len(summary.Numstat) > 0 {
+		b.WriteString("- numstat entries are: added<TAB>deleted<TAB>path\n")
+		lines := summary.Numstat
+		if len(lines) > maxInventoryLines {
+			lines = lines[:maxInventoryLines]
+		}
+		for _, line := range lines {
+			b.WriteString("  - ")
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+		if len(summary.Numstat) > maxInventoryLines {
+			fmt.Fprintf(&b, "  - ... %d more files omitted from this note; run git diff --name-only %s...HEAD to inspect the rest.\n", len(summary.Numstat)-maxInventoryLines, summary.BaseRef)
+		}
+	} else if len(summary.Files) > 0 {
+		files := summary.Files
+		if len(files) > maxInventoryLines {
+			files = files[:maxInventoryLines]
+		}
+		for _, file := range files {
+			b.WriteString("  - ")
+			b.WriteString(file)
+			b.WriteString("\n")
+		}
+		if len(summary.Files) > maxInventoryLines {
+			fmt.Fprintf(&b, "  - ... %d more files omitted from this note; run git diff --name-only %s...HEAD to inspect the rest.\n", len(summary.Files)-maxInventoryLines, summary.BaseRef)
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func (o *Orchestrator) ensurePullRequestOpen(ctx context.Context, jobID int64, pr model.PRRef) error {
@@ -253,9 +307,11 @@ func (o *Orchestrator) review(ctx context.Context, jobID int64, ev *model.Webhoo
 		}
 	}()
 	o.jobLog(ctx, jobID, "git", "worktree ready")
+	var diffSummary worktreeDiffSummary
 	if summary, err := inspectWorktreeDiff(ctx, worktree, ev.BaseRef); err != nil {
 		o.jobLog(ctx, jobID, "git", "worktree diff summary failed: "+err.Error())
 	} else {
+		diffSummary = summary
 		o.jobLog(ctx, jobID, "git", formatWorktreeDiffSummary(summary))
 	}
 
@@ -278,7 +334,7 @@ func (o *Orchestrator) review(ctx context.Context, jobID int64, ev *model.Webhoo
 	var errs []error
 	successes := 0
 	for _, reviewer := range o.reviewers() {
-		if err := o.runReviewer(ctx, jobID, ev, isUpdate, pull.ID, worktree, diff, discussion, reviewer); err != nil {
+		if err := o.runReviewer(ctx, jobID, ev, isUpdate, pull.ID, worktree, diff, diffSummary, discussion, reviewer); err != nil {
 			if errors.Is(err, errPullRequestClosed) {
 				o.jobLog(ctx, jobID, "skip", "PR closed or merged; stopping remaining reviewers")
 				break
@@ -295,7 +351,7 @@ func (o *Orchestrator) review(ctx context.Context, jobID int64, ev *model.Webhoo
 	return nil
 }
 
-func (o *Orchestrator) runReviewer(ctx context.Context, jobID int64, ev *model.WebhookEvent, isUpdate bool, pullID int64, worktree string, diff model.DiffMap, discussion []model.PullComment, reviewer model.Reviewer) error {
+func (o *Orchestrator) runReviewer(ctx context.Context, jobID int64, ev *model.WebhookEvent, isUpdate bool, pullID int64, worktree string, diff model.DiffMap, diffSummary worktreeDiffSummary, discussion []model.PullComment, reviewer model.Reviewer) error {
 	pr := ev.PR
 	agent := reviewer.Name()
 	state, err := o.Store.GetReviewerState(ctx, pr, agent)
@@ -325,6 +381,7 @@ func (o *Orchestrator) runReviewer(ctx context.Context, jobID int64, ev *model.W
 		in.SessionID = sessionID
 		in.Note = fmt.Sprintf("PR head 已从 %s 更新到 %s。请基于 %s 重新审查当前 diff，并在摘要中说明之前报告的问题哪些已经修复。", shortSHA(prevHead), shortSHA(ev.HeadSHA), ev.BaseRef)
 	}
+	in.Note = appendDiffInventoryNote(in.Note, diffSummary)
 	in.Note = appendCommentContextNote(in.Note, discussion)
 	in.Note = appendPriorFindingsNote(in.Note, priorOpen)
 

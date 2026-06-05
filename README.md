@@ -100,7 +100,7 @@ Env vars (all optional except `ADMIN_PASSWORD`; the console can set the rest):
 | `CLAUDE_MAX_BUDGET_USD` | `0.3` | per Claude Code run budget cap; set `0` to disable |
 | `CC_SWITCH_CONFIG_DIR` | `/cc-switch` | cc-switch provider/proxy config directory |
 | `CC_SWITCH_PROVIDER_ID` | — | optional provider id to switch before Claude runs |
-| `CONCURRENCY` | `2` | worker count |
+| `CONCURRENCY` | `5` | worker count |
 | `TRIGGER_KEYWORDS` | `/review,@review` | comma-separated |
 | `REPO_ALLOWLIST` | — | comma-separated `owner/repo`; empty = all |
 | `TIMEOUT` | `30m` | per codex run |

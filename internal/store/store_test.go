@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/turning4th/codex-gitea/internal/model"
 )
@@ -328,6 +329,36 @@ func TestListJobs(t *testing.T) {
 	}
 	if stats.TotalJobs != 2 || stats.ReviewJobs != 2 || stats.ReviewedJobs != 1 || stats.Done != 1 || stats.Failed != 1 {
 		t.Fatalf("JobStats = %+v, want total/review/reviewed/done/failed = 2/2/1/1/1", stats)
+	}
+
+	oldTime := time.Date(2026, 6, 5, 8, 0, 0, 0, time.UTC)
+	newTime := time.Date(2026, 6, 5, 9, 0, 0, 0, time.UTC)
+	if _, err := st.db.ExecContext(ctx, `UPDATE jobs SET created_at=? WHERE id=?`, oldTime.Format(time.RFC3339), job1.ID); err != nil {
+		t.Fatalf("set old created_at: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE jobs SET created_at=? WHERE id=?`, newTime.Format(time.RFC3339), job2.ID); err != nil {
+		t.Fatalf("set new created_at: %v", err)
+	}
+	filtered, err := st.ListJobsFiltered(ctx, model.JobFilter{CreatedFrom: &newTime}, 10, 0)
+	if err != nil {
+		t.Fatalf("ListJobsFiltered: %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].ID != job2.ID {
+		t.Fatalf("ListJobsFiltered = %+v, want only job2", filtered)
+	}
+	filteredTotal, err := st.CountJobsFiltered(ctx, model.JobFilter{CreatedFrom: &newTime})
+	if err != nil {
+		t.Fatalf("CountJobsFiltered: %v", err)
+	}
+	if filteredTotal != 1 {
+		t.Fatalf("CountJobsFiltered = %d, want 1", filteredTotal)
+	}
+	filteredStats, err := st.JobStatsFiltered(ctx, model.JobFilter{CreatedFrom: &newTime})
+	if err != nil {
+		t.Fatalf("JobStatsFiltered: %v", err)
+	}
+	if filteredStats.TotalJobs != 1 || filteredStats.Done != 1 || filteredStats.Failed != 0 {
+		t.Fatalf("JobStatsFiltered = %+v, want total/done/failed = 1/1/0", filteredStats)
 	}
 }
 

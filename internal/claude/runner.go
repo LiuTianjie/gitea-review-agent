@@ -366,6 +366,7 @@ Hard rules:
 - Allowed Bash commands are limited to simple git inspection commands like `+"`git diff ...`"+`, `+"`git show ...`"+`, `+"`git status ...`"+`, and `+"`git ls-files ...`"+`.
 - Use the allowed read-only tools to inspect the diff and relevant surrounding code; do not rely on filenames alone.
 - Report only risks introduced or exposed by this PR.
+- If the additional context includes "Current PR diff inventory", treat it as the authoritative coverage checklist for this review. Use it to plan file-by-file coverage before deciding findings.
 - This is not a top-N review. Continue until every changed file and its relevant call paths have been checked.
 - Report every concrete PR-caused risk you can substantiate, including low and medium severity issues. Do not stop after finding the first high-impact issue.
 - If a changed file looks safe, still consider whether its callers, migrations, API consumers, or persisted data contracts make the change risky.

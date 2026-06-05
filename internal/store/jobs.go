@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/turning4th/codex-gitea/internal/model"
 )
@@ -161,6 +163,12 @@ func (s *Store) RecoverRunning(ctx context.Context) error {
 // ListJobs returns a page of jobs (newest first) as console read models, joined
 // to repo owner/name and the PR's session id.
 func (s *Store) ListJobs(ctx context.Context, limit, offset int) ([]model.JobView, error) {
+	return s.ListJobsFiltered(ctx, model.JobFilter{}, limit, offset)
+}
+
+// ListJobsFiltered returns a page of jobs matching filter (newest first), joined
+// to repo owner/name and the PR's session id.
+func (s *Store) ListJobsFiltered(ctx context.Context, filter model.JobFilter, limit, offset int) ([]model.JobView, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -170,6 +178,8 @@ func (s *Store) ListJobs(ctx context.Context, limit, offset int) ([]model.JobVie
 	if offset < 0 {
 		offset = 0
 	}
+	where, args := jobFilterWhere(filter)
+	args = append(args, limit, offset)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT j.id, r.owner, r.name, j.pr_number, j.event, j.action,
 		        j.status, j.attempts, j.error, j.created_at, j.started_at, j.finished_at,
@@ -177,7 +187,8 @@ func (s *Store) ListJobs(ctx context.Context, limit, offset int) ([]model.JobVie
 		 FROM jobs j
 		 LEFT JOIN repos r ON r.id = j.repo_id
 		 LEFT JOIN pulls p ON p.repo_id = j.repo_id AND p.number = j.pr_number
-		 ORDER BY j.created_at DESC, j.id DESC LIMIT ? OFFSET ?`, limit, offset)
+		 `+where+`
+		 ORDER BY j.created_at DESC, j.id DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
 	}
@@ -230,8 +241,14 @@ func (s *Store) ListJobs(ctx context.Context, limit, offset int) ([]model.JobVie
 
 // CountJobs returns the total number of queued jobs.
 func (s *Store) CountJobs(ctx context.Context) (int, error) {
+	return s.CountJobsFiltered(ctx, model.JobFilter{})
+}
+
+// CountJobsFiltered returns the total number of queued jobs matching filter.
+func (s *Store) CountJobsFiltered(ctx context.Context, filter model.JobFilter) (int, error) {
 	var n int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs`).Scan(&n); err != nil {
+	where, args := jobFilterWhere(filter)
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs j `+where, args...).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count jobs: %w", err)
 	}
 	return n, nil
@@ -239,7 +256,23 @@ func (s *Store) CountJobs(ctx context.Context) (int, error) {
 
 // JobStats returns aggregate job counts for the console dashboard.
 func (s *Store) JobStats(ctx context.Context) (model.JobStats, error) {
+	return s.JobStatsFiltered(ctx, model.JobFilter{})
+}
+
+// JobStatsFiltered returns aggregate job counts matching filter.
+func (s *Store) JobStatsFiltered(ctx context.Context, filter model.JobFilter) (model.JobStats, error) {
 	var stats model.JobStats
+	where, filterArgs := jobFilterWhere(filter)
+	args := []any{
+		string(model.EventPullRequest),
+		string(model.EventPullRequest), string(model.JobDone),
+		string(model.JobDone),
+		string(model.JobFailed),
+		string(model.JobRunning),
+		string(model.JobPending),
+		string(model.JobSuperseded),
+	}
+	args = append(args, filterArgs...)
 	err := s.db.QueryRowContext(ctx,
 		`SELECT
 		    COUNT(*),
@@ -250,15 +283,7 @@ func (s *Store) JobStats(ctx context.Context) (model.JobStats, error) {
 		    COALESCE(SUM(CASE WHEN status=? THEN 1 ELSE 0 END), 0),
 		    COALESCE(SUM(CASE WHEN status=? THEN 1 ELSE 0 END), 0),
 		    COALESCE(SUM(CASE WHEN status=? THEN 1 ELSE 0 END), 0)
-		 FROM jobs`,
-		string(model.EventPullRequest),
-		string(model.EventPullRequest), string(model.JobDone),
-		string(model.JobDone),
-		string(model.JobFailed),
-		string(model.JobRunning),
-		string(model.JobPending),
-		string(model.JobSuperseded),
-	).Scan(
+		 FROM jobs j `+where, args...).Scan(
 		&stats.TotalJobs,
 		&stats.ReviewJobs,
 		&stats.ReviewedJobs,
@@ -272,6 +297,23 @@ func (s *Store) JobStats(ctx context.Context) (model.JobStats, error) {
 		return model.JobStats{}, fmt.Errorf("job stats: %w", err)
 	}
 	return stats, nil
+}
+
+func jobFilterWhere(filter model.JobFilter) (string, []any) {
+	var clauses []string
+	var args []any
+	if filter.CreatedFrom != nil && !filter.CreatedFrom.IsZero() {
+		clauses = append(clauses, "j.created_at >= ?")
+		args = append(args, filter.CreatedFrom.UTC().Format(time.RFC3339))
+	}
+	if filter.CreatedTo != nil && !filter.CreatedTo.IsZero() {
+		clauses = append(clauses, "j.created_at <= ?")
+		args = append(args, filter.CreatedTo.UTC().Format(time.RFC3339))
+	}
+	if len(clauses) == 0 {
+		return "", args
+	}
+	return "WHERE " + strings.Join(clauses, " AND "), args
 }
 
 func (s *Store) listJobLogs(ctx context.Context, jobID int64) ([]model.JobLog, error) {

@@ -39,7 +39,7 @@ const (
 	DefaultClaudeModel  = "sonnet"
 	DefaultAuthMode     = AuthModeAuthFile
 	DefaultSandboxMode  = SandboxReadOnly
-	DefaultConcurrency  = 2
+	DefaultConcurrency  = 5
 	DefaultTimeout      = 30 * time.Minute
 	DefaultClaudeBudget = 0.30
 )

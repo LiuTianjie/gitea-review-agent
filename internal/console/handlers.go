@@ -4,11 +4,13 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/turning4th/codex-gitea/internal/config"
 	"github.com/turning4th/codex-gitea/internal/model"
@@ -352,18 +354,23 @@ func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
 		pageSize = 100
 	}
 	offset := (page - 1) * pageSize
+	filter, err := parseJobFilter(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
-	jobs, err := c.store.ListJobs(r.Context(), pageSize, offset)
+	jobs, err := c.store.ListJobsFiltered(r.Context(), filter, pageSize, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	total, err := c.store.CountJobs(r.Context())
+	total, err := c.store.CountJobsFiltered(r.Context(), filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	stats, err := c.store.JobStats(r.Context())
+	stats, err := c.store.JobStatsFiltered(r.Context(), filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -497,4 +504,36 @@ func parsePositiveInt(raw string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func parseJobFilter(r *http.Request) (model.JobFilter, error) {
+	var filter model.JobFilter
+	from, err := parseOptionalTime(r.URL.Query().Get("created_from"))
+	if err != nil {
+		return filter, err
+	}
+	to, err := parseOptionalTime(r.URL.Query().Get("created_to"))
+	if err != nil {
+		return filter, err
+	}
+	if from != nil && to != nil && from.After(*to) {
+		return filter, fmt.Errorf("created_from must be before created_to")
+	}
+	filter.CreatedFrom = from
+	filter.CreatedTo = to
+	return filter, nil
+}
+
+func parseOptionalTime(raw string) (*time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	layouts := []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04", "2006-01-02 15:04:05", "2006-01-02 15:04"}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return &t, nil
+		}
+	}
+	return nil, fmt.Errorf("invalid time %q", raw)
 }

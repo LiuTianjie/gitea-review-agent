@@ -224,6 +224,19 @@
     gap: 10px;
     margin-bottom: 14px;
   }
+  .filter-bar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(180px, 1fr)) auto auto;
+    align-items: end;
+    gap: 10px;
+    margin: 0 0 14px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel-subtle);
+  }
+  .filter-bar label { margin-top: 0; }
+  .filter-bar button { margin: 0; }
   .stat-card {
     min-height: 82px;
     padding: 13px;
@@ -442,6 +455,7 @@
     .section-bar { align-items: flex-start; flex-direction: column; }
     .section-actions { justify-content: flex-start; width: 100%; }
     .stats-grid { grid-template-columns: 1fr 1fr; }
+    .filter-bar { grid-template-columns: 1fr; }
     .pager { width: 100%; justify-content: space-between; }
     .detail-grid { grid-template-columns: 1fr; }
     .log-item { grid-template-columns: 1fr; }
@@ -508,6 +522,18 @@
       <div class="stat-card"><span>成功审核</span><strong>--</strong><small>已完成 PR review</small></div>
       <div class="stat-card"><span>失败</span><strong>--</strong><small>需要排查</small></div>
       <div class="stat-card"><span>运行/等待</span><strong>--</strong><small>running + pending</small></div>
+    </div>
+    <div class="filter-bar" aria-label="任务时间筛选">
+      <div>
+        <label for="jobsCreatedFrom">创建时间从</label>
+        <input id="jobsCreatedFrom" type="datetime-local">
+      </div>
+      <div>
+        <label for="jobsCreatedTo">创建时间到</label>
+        <input id="jobsCreatedTo" type="datetime-local">
+      </div>
+      <button id="applyJobsFilterBtn" type="button">应用</button>
+      <button class="secondary" id="clearJobsFilterBtn" type="button">清空</button>
     </div>
     <div class="jobs-layout">
       <div class="table-wrap">
@@ -601,7 +627,7 @@
       </div>
       <div>
         <label for="concurrency">并发数</label>
-        <input id="concurrency" type="number" min="1" placeholder="2">
+        <input id="concurrency" type="number" min="1" placeholder="5">
       </div>
     </div>
     <div class="row">
@@ -758,7 +784,15 @@
 
   function $(id){ return document.getElementById(id); }
   function show(el, text, ok){ el.textContent = text; el.className = "msg " + (ok ? "ok" : "err"); }
-  function prettyTime(v){ return v ? String(v).replace("T"," ").replace("Z","") : ""; }
+  function prettyTime(v){
+    if (!v) return "";
+    var d = new Date(v);
+    if (isNaN(d.getTime())) return String(v).replace("T"," ").replace("Z","");
+    return d.toLocaleString("zh-CN", {
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
+    }).replace(/\//g, "-");
+  }
   function findJob(id){
     for (var i = 0; i < jobCache.length; i++) {
       if (String(jobCache[i].id) === String(id)) return jobCache[i];
@@ -871,9 +905,37 @@
     }).catch(function(e){ show($("effectiveMsg"), "读取失败：" + e, false); });
   }
 
+  function dateInputToISO(id){
+    var el = $(id);
+    if (!el || !el.value) return "";
+    var d = new Date(el.value);
+    return isNaN(d.getTime()) ? "" : d.toISOString();
+  }
+
+  function jobsURL(){
+    var params = new URLSearchParams();
+    params.set("page", jobsPage);
+    params.set("page_size", jobsPageSize);
+    var from = dateInputToISO("jobsCreatedFrom");
+    var to = dateInputToISO("jobsCreatedTo");
+    if (from) params.set("created_from", from);
+    if (to) params.set("created_to", to);
+    return "/admin/api/jobs?" + params.toString();
+  }
+
+  function jobsFilterLabel(){
+    var from = $("jobsCreatedFrom") && $("jobsCreatedFrom").value;
+    var to = $("jobsCreatedTo") && $("jobsCreatedTo").value;
+    if (from && to) return " · " + from.replace("T", " ") + " 至 " + to.replace("T", " ");
+    if (from) return " · 从 " + from.replace("T", " ");
+    if (to) return " · 到 " + to.replace("T", " ");
+    return "";
+  }
+
   function loadJobs(){
-    var url = "/admin/api/jobs?page=" + encodeURIComponent(jobsPage) + "&page_size=" + encodeURIComponent(jobsPageSize);
+    var url = jobsURL();
     fetch(url).then(function(r){ return r.json(); }).then(function(payload){
+      if (payload && payload.ok === false) throw new Error(payload.error || "加载失败");
       if (Array.isArray(payload)) {
         payload = {jobs: payload, page: 1, page_size: payload.length || jobsPageSize, total: payload.length || 0, total_pages: 1, stats: null};
       }
@@ -889,8 +951,20 @@
       if (selectedJobID && findJob(selectedJobID)) renderJobDetail(findJob(selectedJobID));
       else if (jobCache.length) { selectedJobID = jobCache[0].id; renderJobs(); renderJobDetail(jobCache[0]); }
       else renderEmptyJobDetail();
-      $("jobsMeta").textContent = "更新于 " + new Date().toLocaleTimeString() + " · 共 " + jobsTotal + " 条";
+      $("jobsMeta").textContent = "更新于 " + new Date().toLocaleTimeString() + " · 共 " + jobsTotal + " 条" + jobsFilterLabel();
     }).catch(function(e){ $("jobsBody").innerHTML = '<tr><td colspan="10" class="err">加载失败：' + esc(e) + '</td></tr>'; });
+  }
+
+  function applyJobsFilter(){
+    jobsPage = 1;
+    selectedJobID = null;
+    loadJobs();
+  }
+
+  function clearJobsFilter(){
+    $("jobsCreatedFrom").value = "";
+    $("jobsCreatedTo").value = "";
+    applyJobsFilter();
   }
 
   function renderJobStats(){
@@ -1079,6 +1153,10 @@
   $("prevJobsBtn").addEventListener("click", function(){ goJobsPage(-1); });
   $("nextJobsBtn").addEventListener("click", function(){ goJobsPage(1); });
   $("jobsPageSize").addEventListener("change", changeJobsPageSize);
+  $("applyJobsFilterBtn").addEventListener("click", applyJobsFilter);
+  $("clearJobsFilterBtn").addEventListener("click", clearJobsFilter);
+  $("jobsCreatedFrom").addEventListener("keydown", function(e){ if (e.key === "Enter") applyJobsFilter(); });
+  $("jobsCreatedTo").addEventListener("keydown", function(e){ if (e.key === "Enter") applyJobsFilter(); });
 
   loadSettings();
   loadEffectiveConfig();

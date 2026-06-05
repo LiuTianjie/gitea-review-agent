@@ -325,6 +325,12 @@ type JobStats struct {
 	Superseded   int
 }
 
+// JobFilter constrains console job history queries.
+type JobFilter struct {
+	CreatedFrom *time.Time
+	CreatedTo   *time.Time
+}
+
 // AnalysisReport is a saved snapshot of full-history review/finding analytics.
 type AnalysisReport struct {
 	ID        int64
@@ -405,8 +411,11 @@ type Store interface {
 	RecoverRunning(ctx context.Context) error // running -> pending on boot
 	AppendJobLog(ctx context.Context, jobID int64, stage, message string) error
 	ListJobs(ctx context.Context, limit, offset int) ([]JobView, error)
+	ListJobsFiltered(ctx context.Context, filter JobFilter, limit, offset int) ([]JobView, error)
 	CountJobs(ctx context.Context) (int, error)
+	CountJobsFiltered(ctx context.Context, filter JobFilter) (int, error)
 	JobStats(ctx context.Context) (JobStats, error)
+	JobStatsFiltered(ctx context.Context, filter JobFilter) (JobStats, error)
 	GetJob(ctx context.Context, id int64) (*Job, error)
 
 	// Pulls / sessions

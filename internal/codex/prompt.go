@@ -15,6 +15,7 @@ const reviewQualityInstruction = `Review process:
 - Look for repository review guidance before judging findings. Read any present files that are relevant, such as ` + "`AGENTS.md`, `CLAUDE.md`, `CODE_REVIEW.md`, `CODING_STANDARDS.md`, `.github/copilot-instructions.md`, `.github/instructions/**/*.instructions.md`, `.coderabbit.yaml`, `.greptile/*`, `.cursorrules`" + `. Apply path-specific instructions only to matching files.
 - Treat generated output, lock files, vendored dependencies, and build artifacts as low-value review targets unless the PR changes behavior through them or repository instructions explicitly include them.
 - Prioritize correctness regressions, security/auth/input validation, API and data-contract breaks, persistence/migration compatibility, concurrency or async lifecycle bugs, resource leaks, error handling, and edge cases.
+- If the additional context includes "Current PR diff inventory", treat it as the authoritative coverage checklist for this review. Use it to plan file-by-file coverage before deciding findings.
 - This is not a top-N review. Continue until every changed file and its relevant call paths have been checked.
 - Report every concrete PR-caused risk you can substantiate, including low and medium severity issues. Do not stop after finding the first high-impact issue.
 - If a changed file looks safe, still consider whether its callers, migrations, API consumers, or persisted data contracts make the change risky.

@@ -173,9 +173,16 @@ func (s *fakeStore) FinishJob(context.Context, int64, model.JobStatus, string) e
 func (s *fakeStore) RecoverRunning(context.Context) error                            { return nil }
 func (s *fakeStore) AppendJobLog(context.Context, int64, string, string) error       { return nil }
 func (s *fakeStore) ListJobs(context.Context, int, int) ([]model.JobView, error)     { return nil, nil }
+func (s *fakeStore) ListJobsFiltered(context.Context, model.JobFilter, int, int) ([]model.JobView, error) {
+	return nil, nil
+}
 func (s *fakeStore) CountJobs(context.Context) (int, error)                          { return 0, nil }
+func (s *fakeStore) CountJobsFiltered(context.Context, model.JobFilter) (int, error) { return 0, nil }
 func (s *fakeStore) JobStats(context.Context) (model.JobStats, error)                { return model.JobStats{}, nil }
-func (s *fakeStore) GetJob(context.Context, int64) (*model.Job, error)               { return nil, nil }
+func (s *fakeStore) JobStatsFiltered(context.Context, model.JobFilter) (model.JobStats, error) {
+	return model.JobStats{}, nil
+}
+func (s *fakeStore) GetJob(context.Context, int64) (*model.Job, error) { return nil, nil }
 func (s *fakeStore) ListFindings(_ context.Context, pullID int64) ([]model.StoredFinding, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -202,10 +209,17 @@ func (s *fakeStore) BuildAnalysisSummary(context.Context) (model.AnalysisSummary
 }
 func (s *fakeStore) Close() error { return nil }
 
-type fakeCache struct{ prepared, cleaned int }
+type fakeCache struct {
+	prepared int
+	cleaned  int
+	worktree string
+}
 
 func (c *fakeCache) Prepare(_ context.Context, _ model.PRRef, _, _, _, _ string) (string, error) {
 	c.prepared++
+	if c.worktree != "" {
+		return c.worktree, nil
+	}
 	return "/work/fake", nil
 }
 func (c *fakeCache) Cleanup(model.PRRef) error { c.cleaned++; return nil }
@@ -311,19 +325,8 @@ func diffWith(path string, lines ...int) model.DiffMap {
 	}}
 }
 
-func prEvent(action, head string) *model.Job {
-	ev := model.WebhookEvent{
-		Event: model.EventPullRequest, Action: action,
-		PR:      model.PRRef{Owner: "alice", Repo: "repo", Number: 7},
-		BaseRef: "main", HeadRef: "feat", HeadSHA: head, CloneURL: "file:///x",
-	}
-	b, _ := json.Marshal(ev)
-	return &model.Job{Payload: b, PR: ev.PR, Event: ev.Event, Action: action}
-}
-
-// ---------- tests ----------
-
-func TestInspectWorktreeDiffUsesBaseToHeadThreeDotDiff(t *testing.T) {
+func testDiffRepo(t *testing.T) string {
+	t.Helper()
 	dir := t.TempDir()
 	runTestGit(t, dir, "init", "-b", "main")
 	runTestGit(t, dir, "config", "user.email", "bot@example.com")
@@ -341,6 +344,23 @@ func TestInspectWorktreeDiffUsesBaseToHeadThreeDotDiff(t *testing.T) {
 	}
 	runTestGit(t, dir, "add", ".")
 	runTestGit(t, dir, "commit", "-m", "feature")
+	return dir
+}
+
+func prEvent(action, head string) *model.Job {
+	ev := model.WebhookEvent{
+		Event: model.EventPullRequest, Action: action,
+		PR:      model.PRRef{Owner: "alice", Repo: "repo", Number: 7},
+		BaseRef: "main", HeadRef: "feat", HeadSHA: head, CloneURL: "file:///x",
+	}
+	b, _ := json.Marshal(ev)
+	return &model.Job{Payload: b, PR: ev.PR, Event: ev.Event, Action: action}
+}
+
+// ---------- tests ----------
+
+func TestInspectWorktreeDiffUsesBaseToHeadThreeDotDiff(t *testing.T) {
+	dir := testDiffRepo(t)
 
 	summary, err := inspectWorktreeDiff(context.Background(), dir, "main")
 	if err != nil {
@@ -349,9 +369,43 @@ func TestInspectWorktreeDiffUsesBaseToHeadThreeDotDiff(t *testing.T) {
 	if summary.BaseRef != "main" || summary.FileCount != 2 {
 		t.Fatalf("summary = %+v, want base main and 2 files", summary)
 	}
+	if len(summary.Files) != 2 || !stringSet(summary.Files)["a.txt"] || !stringSet(summary.Files)["b.txt"] {
+		t.Fatalf("summary files = %+v, want a.txt and b.txt", summary.Files)
+	}
+	if len(summary.Numstat) != 2 || !strings.Contains(strings.Join(summary.Numstat, "\n"), "a.txt") {
+		t.Fatalf("summary numstat = %+v, want entries for changed files", summary.Numstat)
+	}
 	formatted := formatWorktreeDiffSummary(summary)
 	if !strings.Contains(formatted, "base=main") || !strings.Contains(formatted, "files=2") {
 		t.Fatalf("formatted summary missing key data: %s", formatted)
+	}
+	note := appendDiffInventoryNote("existing context", summary)
+	if !strings.Contains(note, "Current PR diff inventory") ||
+		!strings.Contains(note, "changed_files: 2") ||
+		!strings.Contains(note, "a.txt") ||
+		!strings.Contains(note, "existing context") {
+		t.Fatalf("inventory note missing expected coverage data:\n%s", note)
+	}
+}
+
+func TestReview_OpenedPassesDiffInventoryNote(t *testing.T) {
+	st := newFakeStore()
+	cx := &fakeCodex{result: &model.ReviewResult{
+		Summary: "clean", OverallSeverity: model.Severity("none"), SessionID: "thread-1",
+	}}
+	gt := &fakeGitea{diff: diffWith("a.txt", 1)}
+	o := &Orchestrator{
+		Store: st, Cache: &fakeCache{worktree: testDiffRepo(t)}, Reviewers: []model.Reviewer{cx}, Gitea: gt,
+	}
+
+	if err := o.Process(context.Background(), prEvent("opened", "head123")); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if !strings.Contains(cx.lastIn.Note, "Current PR diff inventory") ||
+		!strings.Contains(cx.lastIn.Note, "changed_files: 2") ||
+		!strings.Contains(cx.lastIn.Note, "a.txt") ||
+		!strings.Contains(cx.lastIn.Note, "b.txt") {
+		t.Fatalf("reviewer note missing diff inventory:\n%s", cx.lastIn.Note)
 	}
 }
 
