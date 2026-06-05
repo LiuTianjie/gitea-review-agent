@@ -831,6 +831,7 @@
   var jobsTotalPages = 1;
   var jobsStats = null;
   var jobsLoading = false;
+  var jobsReloadQueued = false;
   var analysisLoaded = false;
   var activeDateInput = null;
   var datePickerMonth = null;
@@ -986,12 +987,16 @@
     if (from && to) return " · " + from + " 至 " + to;
     if (from) return " · 从 " + from;
     if (to) return " · 到 " + to;
-    return "";
+    return " · 全部时间";
   }
 
   function loadJobs(){
-    if (jobsLoading) return;
+    if (jobsLoading) {
+      jobsReloadQueued = true;
+      return;
+    }
     jobsLoading = true;
+    jobsReloadQueued = false;
     var url = jobsURL();
     fetch(url).then(function(r){ return r.json(); }).then(function(payload){
       if (payload && payload.ok === false) throw new Error(payload.error || "加载失败");
@@ -1012,7 +1017,10 @@
       else renderEmptyJobDetail();
       $("jobsMeta").textContent = "更新于 " + new Date().toLocaleTimeString() + " · 共 " + jobsTotal + " 条" + jobsFilterLabel();
     }).catch(function(e){ $("jobsBody").innerHTML = '<tr><td colspan="10" class="err">加载失败：' + esc(e) + '</td></tr>'; })
-      .finally(function(){ jobsLoading = false; });
+      .finally(function(){
+        jobsLoading = false;
+        if (jobsReloadQueued) loadJobs();
+      });
   }
 
   function applyJobsFilter(){
@@ -1027,18 +1035,19 @@
     applyJobsFilter();
   }
 
-  function openDatePicker(input){
-    if (!input) return;
+  function openDatePicker(input, allowFallback){
+    if (!input) return false;
     if (typeof input.showPicker === "function") {
       try {
         input.showPicker();
-        return;
+        hideDatePicker();
+        return true;
       } catch (_) {
-        // showPicker requires a direct user gesture in some browsers; fall back
-        // to the built-in lightweight picker below.
+        if (!allowFallback) return false;
       }
     }
-    showDatePicker(input);
+    if (allowFallback) showDatePicker(input);
+    return !!allowFallback;
   }
 
   function parseDateValue(value){
@@ -1134,14 +1143,14 @@
   function wireDatePicker(id){
     var input = $(id);
     if (!input) return;
-    input.addEventListener("click", function(e){ e.stopPropagation(); openDatePicker(input); });
-    input.addEventListener("focus", function(){ openDatePicker(input); });
+    input.addEventListener("click", function(e){ e.stopPropagation(); openDatePicker(input, true); });
+    input.addEventListener("focus", function(){ if (typeof input.showPicker !== "function") openDatePicker(input, true); });
     var label = document.querySelector("label[for='" + id + "']");
     if (label) {
       label.addEventListener("click", function(e){
         e.preventDefault();
         input.focus();
-        openDatePicker(input);
+        openDatePicker(input, true);
       });
     }
   }

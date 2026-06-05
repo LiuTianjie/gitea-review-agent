@@ -362,6 +362,73 @@ func TestListJobs(t *testing.T) {
 	}
 }
 
+func TestListJobsFilteredDateRangeBoundaries(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	before, _, err := st.EnqueueJob(ctx, sampleEvent("d-range-before"))
+	if err != nil {
+		t.Fatalf("enqueue before: %v", err)
+	}
+	insideMorningEvent := sampleEvent("d-range-morning")
+	insideMorningEvent.PR.Number = 8
+	insideMorning, _, err := st.EnqueueJob(ctx, insideMorningEvent)
+	if err != nil {
+		t.Fatalf("enqueue inside morning: %v", err)
+	}
+	insideNightEvent := sampleEvent("d-range-night")
+	insideNightEvent.PR.Number = 9
+	insideNight, _, err := st.EnqueueJob(ctx, insideNightEvent)
+	if err != nil {
+		t.Fatalf("enqueue inside night: %v", err)
+	}
+	afterEvent := sampleEvent("d-range-after")
+	afterEvent.PR.Number = 10
+	after, _, err := st.EnqueueJob(ctx, afterEvent)
+	if err != nil {
+		t.Fatalf("enqueue after: %v", err)
+	}
+
+	times := map[int64]time.Time{
+		before.ID:        time.Date(2026, 6, 4, 23, 59, 59, 0, time.UTC),
+		insideMorning.ID: time.Date(2026, 6, 5, 0, 0, 0, 0, time.UTC),
+		insideNight.ID:   time.Date(2026, 6, 5, 23, 59, 59, 0, time.UTC),
+		after.ID:         time.Date(2026, 6, 6, 0, 0, 0, 0, time.UTC),
+	}
+	for id, createdAt := range times {
+		if _, err := st.db.ExecContext(ctx, `UPDATE jobs SET created_at=? WHERE id=?`, createdAt.Format(time.RFC3339), id); err != nil {
+			t.Fatalf("set created_at for job %d: %v", id, err)
+		}
+	}
+
+	from := time.Date(2026, 6, 5, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 6, 5, 23, 59, 59, 0, time.UTC)
+	filtered, err := st.ListJobsFiltered(ctx, model.JobFilter{CreatedFrom: &from, CreatedTo: &to}, 10, 0)
+	if err != nil {
+		t.Fatalf("ListJobsFiltered: %v", err)
+	}
+	if len(filtered) != 2 {
+		t.Fatalf("ListJobsFiltered got %d jobs, want 2: %+v", len(filtered), filtered)
+	}
+	if filtered[0].ID != insideNight.ID || filtered[1].ID != insideMorning.ID {
+		t.Fatalf("ListJobsFiltered order/contents = [%d,%d], want [%d,%d]", filtered[0].ID, filtered[1].ID, insideNight.ID, insideMorning.ID)
+	}
+	total, err := st.CountJobsFiltered(ctx, model.JobFilter{CreatedFrom: &from, CreatedTo: &to})
+	if err != nil {
+		t.Fatalf("CountJobsFiltered: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("CountJobsFiltered = %d, want 2", total)
+	}
+	stats, err := st.JobStatsFiltered(ctx, model.JobFilter{CreatedFrom: &from, CreatedTo: &to})
+	if err != nil {
+		t.Fatalf("JobStatsFiltered: %v", err)
+	}
+	if stats.TotalJobs != 2 {
+		t.Fatalf("JobStatsFiltered total = %d, want 2", stats.TotalJobs)
+	}
+}
+
 func TestUpsertAndGetPull(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
