@@ -141,7 +141,7 @@ func writeLoginPage(w http.ResponseWriter, message string) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>登录 codex-gitea</title>
+<title>登录 gitea-review-agent</title>
 <style>
   :root {
     --bg: #f7f7f5; --panel: #fff; --text: #171717; --muted: #737373;
@@ -194,7 +194,7 @@ func writeLoginPage(w http.ResponseWriter, message string) {
   <div class="brand">
     <div class="mark">cg</div>
     <div>
-      <h1>codex-gitea</h1>
+      <h1>gitea-review-agent</h1>
       <p class="subtitle">Review automation console</p>
     </div>
   </div>

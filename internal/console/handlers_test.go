@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/turning4th/codex-gitea/internal/config"
 	"github.com/turning4th/codex-gitea/internal/store"
@@ -445,7 +446,7 @@ func TestIndexServed(t *testing.T) {
 	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
 		t.Errorf("index content-type = %q, want text/html", ct)
 	}
-	if !strings.Contains(w.Body.String(), "codex-gitea 控制台") {
+	if !strings.Contains(w.Body.String(), "gitea-review-agent 控制台") {
 		t.Errorf("index body missing title")
 	}
 }
@@ -462,5 +463,22 @@ func TestIsSecretKey(t *testing.T) {
 		if isSecretKey(k) {
 			t.Errorf("isSecretKey(%q) = true, want false", k)
 		}
+	}
+}
+
+func TestParseOptionalTimeDateOnly(t *testing.T) {
+	from, err := parseOptionalTime("2026-06-05", false)
+	if err != nil {
+		t.Fatalf("parse from date: %v", err)
+	}
+	to, err := parseOptionalTime("2026-06-05", true)
+	if err != nil {
+		t.Fatalf("parse to date: %v", err)
+	}
+	if from.Hour() != 0 || from.Minute() != 0 || from.Second() != 0 || from.Nanosecond() != 0 {
+		t.Fatalf("from = %s, want start of day", from.Format(time.RFC3339Nano))
+	}
+	if to.Hour() != 23 || to.Minute() != 59 || to.Second() != 59 || to.Nanosecond() != int(time.Second-time.Nanosecond) {
+		t.Fatalf("to = %s, want end of day", to.Format(time.RFC3339Nano))
 	}
 }

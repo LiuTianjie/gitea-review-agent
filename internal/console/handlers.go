@@ -508,11 +508,11 @@ func parsePositiveInt(raw string, fallback int) int {
 
 func parseJobFilter(r *http.Request) (model.JobFilter, error) {
 	var filter model.JobFilter
-	from, err := parseOptionalTime(r.URL.Query().Get("created_from"))
+	from, err := parseOptionalTime(r.URL.Query().Get("created_from"), false)
 	if err != nil {
 		return filter, err
 	}
-	to, err := parseOptionalTime(r.URL.Query().Get("created_to"))
+	to, err := parseOptionalTime(r.URL.Query().Get("created_to"), true)
 	if err != nil {
 		return filter, err
 	}
@@ -524,14 +524,20 @@ func parseJobFilter(r *http.Request) (model.JobFilter, error) {
 	return filter, nil
 }
 
-func parseOptionalTime(raw string) (*time.Time, error) {
+func parseOptionalTime(raw string, endOfDay bool) (*time.Time, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil, nil
 	}
+	if t, err := time.ParseInLocation("2006-01-02", raw, time.Local); err == nil {
+		if endOfDay {
+			t = t.Add(24*time.Hour - time.Nanosecond)
+		}
+		return &t, nil
+	}
 	layouts := []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04", "2006-01-02 15:04:05", "2006-01-02 15:04"}
 	for _, layout := range layouts {
-		if t, err := time.Parse(layout, raw); err == nil {
+		if t, err := time.ParseInLocation(layout, raw, time.Local); err == nil {
 			return &t, nil
 		}
 	}

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>codex-gitea 控制台</title>
+<title>gitea-review-agent 控制台</title>
 <style>
   :root {
     color-scheme: light;
@@ -237,6 +237,55 @@
   }
   .filter-bar label { margin-top: 0; }
   .filter-bar button { margin: 0; }
+  .date-picker-popover {
+    position: fixed;
+    z-index: 40;
+    width: 286px;
+    padding: 10px;
+    border: 1px solid var(--line-strong);
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 16px 42px rgba(16,16,16,.14);
+  }
+  .date-picker-head {
+    display: grid;
+    grid-template-columns: 32px 1fr 32px;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .date-picker-title { text-align: center; font-size: 13px; font-weight: 720; }
+  .date-picker-popover button {
+    min-height: 30px;
+    margin: 0;
+    padding: 0;
+    border-radius: 7px;
+    font-size: 12px;
+  }
+  .date-picker-nav { background: #fff; color: var(--text); border-color: var(--line-strong); }
+  .date-picker-week,
+  .date-picker-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 4px;
+  }
+  .date-picker-week span {
+    height: 24px;
+    display: grid;
+    place-items: center;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 680;
+  }
+  .date-picker-day {
+    background: #fff;
+    color: var(--text);
+    border-color: transparent;
+  }
+  .date-picker-day:hover { background: var(--panel-subtle); border-color: var(--line-strong); transform: none; }
+  .date-picker-day.is-muted { color: var(--faint); }
+  .date-picker-day.is-today { border-color: var(--black); }
+  .date-picker-day.is-selected { background: var(--black); color: #fff; border-color: var(--black); }
   .stat-card {
     min-height: 82px;
     padding: 13px;
@@ -468,7 +517,7 @@
     <div class="brand">
       <div class="mark">cg</div>
       <div>
-        <h1>codex-gitea</h1>
+        <h1>gitea-review-agent</h1>
         <p class="subtitle">Review automation console</p>
       </div>
     </div>
@@ -526,11 +575,11 @@
     <div class="filter-bar" aria-label="任务时间筛选">
       <div>
         <label for="jobsCreatedFrom">创建时间从</label>
-        <input id="jobsCreatedFrom" type="datetime-local">
+        <input id="jobsCreatedFrom" type="date">
       </div>
       <div>
         <label for="jobsCreatedTo">创建时间到</label>
-        <input id="jobsCreatedTo" type="datetime-local">
+        <input id="jobsCreatedTo" type="date">
       </div>
       <button id="applyJobsFilterBtn" type="button">应用</button>
       <button class="secondary" id="clearJobsFilterBtn" type="button">清空</button>
@@ -781,6 +830,10 @@
   var jobsTotal = 0;
   var jobsTotalPages = 1;
   var jobsStats = null;
+  var jobsLoading = false;
+  var analysisLoaded = false;
+  var activeDateInput = null;
+  var datePickerMonth = null;
 
   function $(id){ return document.getElementById(id); }
   function show(el, text, ok){ el.textContent = text; el.className = "msg " + (ok ? "ok" : "err"); }
@@ -808,7 +861,7 @@
       panel.classList.toggle("active", panel.id === "tab-" + name);
     });
     if (name === "jobs") loadJobs();
-    if (name === "analytics") loadAnalysisLatest();
+    if (name === "analytics" && !analysisLoaded) loadAnalysisLatest();
   }
 
   function loadSettings(){
@@ -905,10 +958,14 @@
     }).catch(function(e){ show($("effectiveMsg"), "读取失败：" + e, false); });
   }
 
-  function dateInputToISO(id){
+  function dateInputToISO(id, endOfDay){
     var el = $(id);
     if (!el || !el.value) return "";
-    var d = new Date(el.value);
+    var parts = el.value.split("-").map(function(part){ return parseInt(part, 10); });
+    if (parts.length !== 3 || parts.some(function(n){ return !n; })) return "";
+    var d = endOfDay
+      ? new Date(parts[0], parts[1] - 1, parts[2], 23, 59, 59, 999)
+      : new Date(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0);
     return isNaN(d.getTime()) ? "" : d.toISOString();
   }
 
@@ -916,8 +973,8 @@
     var params = new URLSearchParams();
     params.set("page", jobsPage);
     params.set("page_size", jobsPageSize);
-    var from = dateInputToISO("jobsCreatedFrom");
-    var to = dateInputToISO("jobsCreatedTo");
+    var from = dateInputToISO("jobsCreatedFrom", false);
+    var to = dateInputToISO("jobsCreatedTo", true);
     if (from) params.set("created_from", from);
     if (to) params.set("created_to", to);
     return "/admin/api/jobs?" + params.toString();
@@ -926,13 +983,15 @@
   function jobsFilterLabel(){
     var from = $("jobsCreatedFrom") && $("jobsCreatedFrom").value;
     var to = $("jobsCreatedTo") && $("jobsCreatedTo").value;
-    if (from && to) return " · " + from.replace("T", " ") + " 至 " + to.replace("T", " ");
-    if (from) return " · 从 " + from.replace("T", " ");
-    if (to) return " · 到 " + to.replace("T", " ");
+    if (from && to) return " · " + from + " 至 " + to;
+    if (from) return " · 从 " + from;
+    if (to) return " · 到 " + to;
     return "";
   }
 
   function loadJobs(){
+    if (jobsLoading) return;
+    jobsLoading = true;
     var url = jobsURL();
     fetch(url).then(function(r){ return r.json(); }).then(function(payload){
       if (payload && payload.ok === false) throw new Error(payload.error || "加载失败");
@@ -952,7 +1011,8 @@
       else if (jobCache.length) { selectedJobID = jobCache[0].id; renderJobs(); renderJobDetail(jobCache[0]); }
       else renderEmptyJobDetail();
       $("jobsMeta").textContent = "更新于 " + new Date().toLocaleTimeString() + " · 共 " + jobsTotal + " 条" + jobsFilterLabel();
-    }).catch(function(e){ $("jobsBody").innerHTML = '<tr><td colspan="10" class="err">加载失败：' + esc(e) + '</td></tr>'; });
+    }).catch(function(e){ $("jobsBody").innerHTML = '<tr><td colspan="10" class="err">加载失败：' + esc(e) + '</td></tr>'; })
+      .finally(function(){ jobsLoading = false; });
   }
 
   function applyJobsFilter(){
@@ -965,6 +1025,125 @@
     $("jobsCreatedFrom").value = "";
     $("jobsCreatedTo").value = "";
     applyJobsFilter();
+  }
+
+  function openDatePicker(input){
+    if (!input) return;
+    if (typeof input.showPicker === "function") {
+      try {
+        input.showPicker();
+        return;
+      } catch (_) {
+        // showPicker requires a direct user gesture in some browsers; fall back
+        // to the built-in lightweight picker below.
+      }
+    }
+    showDatePicker(input);
+  }
+
+  function parseDateValue(value){
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
+    if (!m) return new Date();
+    return new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+  }
+
+  function formatDateValue(date){
+    var y = date.getFullYear();
+    var m = String(date.getMonth() + 1).padStart(2, "0");
+    var d = String(date.getDate()).padStart(2, "0");
+    return y + "-" + m + "-" + d;
+  }
+
+  function sameDate(a, b){
+    return a && b && a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  }
+
+  function ensureDatePicker(){
+    var picker = $("datePickerPopover");
+    if (picker) return picker;
+    picker = document.createElement("div");
+    picker.id = "datePickerPopover";
+    picker.className = "date-picker-popover";
+    picker.hidden = true;
+    picker.setAttribute("role", "dialog");
+    picker.setAttribute("aria-label", "日期选择器");
+    document.body.appendChild(picker);
+    picker.addEventListener("click", function(e){
+      e.stopPropagation();
+      var nav = e.target.closest("[data-date-nav]");
+      if (nav) {
+        datePickerMonth = new Date(datePickerMonth.getFullYear(), datePickerMonth.getMonth() + parseInt(nav.getAttribute("data-date-nav"), 10), 1);
+        renderDatePicker();
+        return;
+      }
+      var day = e.target.closest("[data-date-value]");
+      if (day && activeDateInput) {
+        activeDateInput.value = day.getAttribute("data-date-value");
+        activeDateInput.dispatchEvent(new Event("change", {bubbles: true}));
+        hideDatePicker();
+      }
+    });
+    return picker;
+  }
+
+  function showDatePicker(input){
+    activeDateInput = input;
+    datePickerMonth = parseDateValue(input.value);
+    var picker = ensureDatePicker();
+    picker.hidden = false;
+    renderDatePicker();
+    var rect = input.getBoundingClientRect();
+    var left = Math.min(rect.left, window.innerWidth - picker.offsetWidth - 12);
+    picker.style.left = Math.max(12, left) + "px";
+    picker.style.top = Math.min(rect.bottom + 6, window.innerHeight - picker.offsetHeight - 12) + "px";
+  }
+
+  function hideDatePicker(){
+    var picker = $("datePickerPopover");
+    if (picker) picker.hidden = true;
+    activeDateInput = null;
+  }
+
+  function renderDatePicker(){
+    var picker = ensureDatePicker();
+    var month = datePickerMonth || new Date();
+    var selected = activeDateInput ? parseDateValue(activeDateInput.value) : null;
+    var today = new Date();
+    var first = new Date(month.getFullYear(), month.getMonth(), 1);
+    var start = new Date(first);
+    start.setDate(first.getDate() - first.getDay());
+    var html = "<div class='date-picker-head'>" +
+      "<button class='date-picker-nav' type='button' data-date-nav='-1' aria-label='上个月'>‹</button>" +
+      "<div class='date-picker-title'>" + month.getFullYear() + " 年 " + (month.getMonth() + 1) + " 月</div>" +
+      "<button class='date-picker-nav' type='button' data-date-nav='1' aria-label='下个月'>›</button>" +
+      "</div><div class='date-picker-week'><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>" +
+      "<div class='date-picker-grid'>";
+    for (var i = 0; i < 42; i++) {
+      var day = new Date(start);
+      day.setDate(start.getDate() + i);
+      var cls = "date-picker-day";
+      if (day.getMonth() !== month.getMonth()) cls += " is-muted";
+      if (sameDate(day, today)) cls += " is-today";
+      if (sameDate(day, selected)) cls += " is-selected";
+      html += "<button class='" + cls + "' type='button' data-date-value='" + formatDateValue(day) + "'>" + day.getDate() + "</button>";
+    }
+    html += "</div>";
+    picker.innerHTML = html;
+  }
+
+  function wireDatePicker(id){
+    var input = $(id);
+    if (!input) return;
+    input.addEventListener("click", function(e){ e.stopPropagation(); openDatePicker(input); });
+    input.addEventListener("focus", function(){ openDatePicker(input); });
+    var label = document.querySelector("label[for='" + id + "']");
+    if (label) {
+      label.addEventListener("click", function(e){
+        e.preventDefault();
+        input.focus();
+        openDatePicker(input);
+      });
+    }
   }
 
   function renderJobStats(){
@@ -1062,6 +1241,7 @@
   function loadAnalysisLatest(){
     fetch("/admin/api/analytics/reports/latest").then(function(r){ return r.json(); }).then(function(payload){
       if (!payload.ok) throw new Error(payload.error || "load failed");
+      analysisLoaded = true;
       renderAnalysis(payload.report);
     }).catch(function(e){ show($("analysisMsg"), "加载失败：" + e, false); });
   }
@@ -1073,6 +1253,7 @@
       return r.json().then(function(b){ return {ok:r.ok, b:b}; });
     }).then(function(res){
       if (!res.ok || !res.b.ok) throw new Error((res.b && res.b.error) || "generate failed");
+      analysisLoaded = true;
       renderAnalysis(res.b.report);
       show($("analysisMsg"), "分析报告已生成", true);
     }).catch(function(e){
@@ -1137,7 +1318,9 @@
       selectedJobID = row.getAttribute("data-job-id");
       renderJobs();
       renderJobDetail(findJob(selectedJobID));
+      return;
     }
+    hideDatePicker();
   });
 
 	  $("saveCommonBtn").addEventListener("click", function(){ saveSettings(FIELD_GROUPS.common, "通用设置"); });
@@ -1157,11 +1340,12 @@
   $("clearJobsFilterBtn").addEventListener("click", clearJobsFilter);
   $("jobsCreatedFrom").addEventListener("keydown", function(e){ if (e.key === "Enter") applyJobsFilter(); });
   $("jobsCreatedTo").addEventListener("keydown", function(e){ if (e.key === "Enter") applyJobsFilter(); });
+  wireDatePicker("jobsCreatedFrom");
+  wireDatePicker("jobsCreatedTo");
 
   loadSettings();
   loadEffectiveConfig();
   loadJobs();
-  loadAnalysisLatest();
   setInterval(loadJobs, 10000);
 })();
 </script>
