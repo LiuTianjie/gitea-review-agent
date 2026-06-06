@@ -7,11 +7,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/turning4th/codex-gitea/internal/config"
+	"github.com/turning4th/codex-gitea/internal/model"
 	"github.com/turning4th/codex-gitea/internal/store"
 )
 
@@ -373,6 +375,19 @@ func TestStatusNotConfigured(t *testing.T) {
 func TestJobsEndpoint(t *testing.T) {
 	c, _ := newTestConsole(t, nil)
 	h := c.Routes()
+	job, _, err := c.store.EnqueueJob(context.Background(), &model.WebhookEvent{
+		DeliveryID: "console-job",
+		Event:      model.EventPullRequest,
+		Action:     "opened",
+		PR:         model.PRRef{Owner: "acme", Repo: "widgets", Number: 17},
+		Raw:        []byte(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("enqueue job: %v", err)
+	}
+	if err := c.store.AppendJobLog(context.Background(), job.ID, "codex", "review started"); err != nil {
+		t.Fatalf("append job log: %v", err)
+	}
 
 	w := do(t, h, "GET", "/admin/api/jobs?page=1&page_size=20", "", true)
 	if w.Code != http.StatusOK {
@@ -384,7 +399,7 @@ func TestJobsEndpoint(t *testing.T) {
 		PageSize   int              `json:"page_size"`
 		Total      int              `json:"total"`
 		TotalPages int              `json:"total_pages"`
-		Stats      map[string]any   `json:"stats"`
+		HasMore    bool             `json:"has_more"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode jobs: %v (body=%s)", err, w.Body.String())
@@ -395,8 +410,41 @@ func TestJobsEndpoint(t *testing.T) {
 	if resp.Jobs == nil {
 		t.Fatalf("jobs response missing jobs array")
 	}
-	if resp.Stats == nil {
-		t.Fatalf("jobs response missing stats")
+	if len(resp.Jobs) != 1 || resp.Jobs[0]["log_count"].(float64) != 1 {
+		t.Fatalf("jobs log summary = %+v, want one row with log_count=1", resp.Jobs)
+	}
+	if logs, ok := resp.Jobs[0]["logs"].([]any); ok && len(logs) != 0 {
+		t.Fatalf("jobs list should not include full logs: %+v", logs)
+	}
+
+	w = do(t, h, "GET", "/admin/api/jobs/stats", "", true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("job stats: code = %d body=%s", w.Code, w.Body.String())
+	}
+	var stats map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &stats); err != nil {
+		t.Fatalf("decode job stats: %v", err)
+	}
+	if stats["total_jobs"].(float64) != 1 {
+		t.Fatalf("job stats = %+v, want total_jobs=1", stats)
+	}
+
+	w = do(t, h, "GET", "/admin/api/jobs/"+strconv.FormatInt(job.ID, 10), "", true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("job detail: code = %d body=%s", w.Code, w.Body.String())
+	}
+	var detail struct {
+		LogCount int `json:"log_count"`
+		Logs     []struct {
+			Stage   string `json:"stage"`
+			Message string `json:"message"`
+		} `json:"logs"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("decode job detail: %v", err)
+	}
+	if detail.LogCount != 1 || len(detail.Logs) != 1 || detail.Logs[0].Stage != "codex" || detail.Logs[0].Message != "review started" {
+		t.Fatalf("job detail logs = %+v, want codex/review started", detail)
 	}
 }
 

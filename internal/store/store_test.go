@@ -306,8 +306,15 @@ func TestListJobs(t *testing.T) {
 	if views[0].PR.Owner != "acme" || views[0].PR.Repo != "widgets" {
 		t.Fatalf("ListJobs: repo join mismatch: %+v", views[0].PR)
 	}
-	if len(views[0].Logs) != 1 || views[0].Logs[0].Stage != "codex" || views[0].Logs[0].Message != "review started" {
-		t.Fatalf("ListJobs logs = %+v, want codex/review started", views[0].Logs)
+	if views[0].LogCount != 1 || len(views[0].Logs) != 0 {
+		t.Fatalf("ListJobs log summary = count %d logs %+v, want count-only summary", views[0].LogCount, views[0].Logs)
+	}
+	detail, err := st.GetJobView(ctx, job2.ID)
+	if err != nil {
+		t.Fatalf("GetJobView: %v", err)
+	}
+	if detail.LogCount != 1 || len(detail.Logs) != 1 || detail.Logs[0].Stage != "codex" || detail.Logs[0].Message != "review started" {
+		t.Fatalf("GetJobView logs = count %d %+v, want codex/review started", detail.LogCount, detail.Logs)
 	}
 	paged, err := st.ListJobs(ctx, 1, 1)
 	if err != nil {

@@ -172,8 +172,8 @@ func (s *Store) ListJobsFiltered(ctx context.Context, filter model.JobFilter, li
 	if limit <= 0 {
 		limit = 20
 	}
-	if limit > 100 {
-		limit = 100
+	if limit > 101 {
+		limit = 101
 	}
 	if offset < 0 {
 		offset = 0
@@ -181,17 +181,30 @@ func (s *Store) ListJobsFiltered(ctx context.Context, filter model.JobFilter, li
 	where, args := jobFilterWhere(filter)
 	args = append(args, limit, offset)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT j.id, r.owner, r.name, j.pr_number, j.event, j.action,
-		        j.status, j.attempts, j.error, j.created_at, j.started_at, j.finished_at,
-		        COALESCE(p.session_id,'')
-		 FROM jobs j
-		 LEFT JOIN repos r ON r.id = j.repo_id
-		 LEFT JOIN pulls p ON p.repo_id = j.repo_id AND p.number = j.pr_number
-		 `+where+`
+		jobViewSelect+where+`
 		 ORDER BY j.created_at DESC, j.id DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
 	}
+	out, err := scanJobViewRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.attachJobLogCounts(ctx, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+const jobViewSelect = `SELECT j.id, r.owner, r.name, j.pr_number, j.event, j.action,
+       j.status, j.attempts, j.error, j.created_at, j.started_at, j.finished_at,
+       COALESCE(p.session_id,'')
+FROM jobs j
+LEFT JOIN repos r ON r.id = j.repo_id
+LEFT JOIN pulls p ON p.repo_id = j.repo_id AND p.number = j.pr_number
+`
+
+func scanJobViewRows(rows *sql.Rows) ([]model.JobView, error) {
 	defer rows.Close()
 
 	var out []model.JobView
@@ -226,17 +239,43 @@ func (s *Store) ListJobsFiltered(ctx context.Context, filter model.JobFilter, li
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate job views: %w", err)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, fmt.Errorf("close job rows: %w", err)
-	}
-	for i := range out {
-		logs, err := s.listJobLogs(ctx, out[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		out[i].Logs = logs
-	}
 	return out, nil
+}
+
+func (s *Store) attachJobLogCounts(ctx context.Context, jobs []model.JobView) error {
+	if len(jobs) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(jobs))
+	args := make([]any, len(jobs))
+	for i := range jobs {
+		placeholders[i] = "?"
+		args[i] = jobs[i].ID
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT job_id, COUNT(*) FROM job_logs WHERE job_id IN (`+strings.Join(placeholders, ",")+`) GROUP BY job_id`,
+		args...)
+	if err != nil {
+		return fmt.Errorf("count job logs: %w", err)
+	}
+	defer rows.Close()
+
+	counts := make(map[int64]int, len(jobs))
+	for rows.Next() {
+		var jobID int64
+		var n int
+		if err := rows.Scan(&jobID, &n); err != nil {
+			return fmt.Errorf("scan job log count: %w", err)
+		}
+		counts[jobID] = n
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate job log counts: %w", err)
+	}
+	for i := range jobs {
+		jobs[i].LogCount = counts[jobs[i].ID]
+	}
+	return nil
 }
 
 // CountJobs returns the total number of queued jobs.
@@ -341,6 +380,28 @@ func (s *Store) listJobLogs(ctx context.Context, jobID int64) ([]model.JobLog, e
 		return nil, fmt.Errorf("iterate job logs: %w", err)
 	}
 	return out, nil
+}
+
+// GetJobView returns one console job view with its full log timeline.
+func (s *Store) GetJobView(ctx context.Context, id int64) (*model.JobView, error) {
+	rows, err := s.db.QueryContext(ctx, jobViewSelect+`WHERE j.id=?`, id)
+	if err != nil {
+		return nil, fmt.Errorf("get job view: %w", err)
+	}
+	out, err := scanJobViewRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	logs, err := s.listJobLogs(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	out[0].Logs = logs
+	out[0].LogCount = len(logs)
+	return &out[0], nil
 }
 
 // GetJob returns the full job by id.

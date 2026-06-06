@@ -182,7 +182,8 @@ func (s *fakeStore) JobStats(context.Context) (model.JobStats, error)           
 func (s *fakeStore) JobStatsFiltered(context.Context, model.JobFilter) (model.JobStats, error) {
 	return model.JobStats{}, nil
 }
-func (s *fakeStore) GetJob(context.Context, int64) (*model.Job, error) { return nil, nil }
+func (s *fakeStore) GetJobView(context.Context, int64) (*model.JobView, error) { return nil, nil }
+func (s *fakeStore) GetJob(context.Context, int64) (*model.Job, error)         { return nil, nil }
 func (s *fakeStore) ListFindings(_ context.Context, pullID int64) ([]model.StoredFinding, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

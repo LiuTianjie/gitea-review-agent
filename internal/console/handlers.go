@@ -2,8 +2,10 @@ package console
 
 import (
 	"context"
+	"database/sql"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -98,6 +100,8 @@ func (c *Console) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/api/status", c.handleStatus)
 	mux.HandleFunc("GET /admin/api/effective-config", c.handleEffectiveConfig)
 	mux.HandleFunc("GET /admin/api/jobs", c.handleJobs)
+	mux.HandleFunc("GET /admin/api/jobs/stats", c.handleJobStats)
+	mux.HandleFunc("GET /admin/api/jobs/{id}", c.handleJobDetail)
 	mux.HandleFunc("POST /admin/api/analytics/reports", c.handleCreateAnalysisReport)
 	mux.HandleFunc("GET /admin/api/analytics/reports/latest", c.handleLatestAnalysisReport)
 	mux.HandleFunc("GET /admin/api/analytics/reports", c.handleListAnalysisReports)
@@ -317,6 +321,7 @@ type jobView struct {
 	StartedAt  string       `json:"started_at"`
 	FinishedAt string       `json:"finished_at"`
 	SessionID  string       `json:"session_id"`
+	LogCount   int          `json:"log_count"`
 	Logs       []jobLogView `json:"logs"`
 }
 
@@ -327,12 +332,12 @@ type jobLogView struct {
 }
 
 type jobsResponse struct {
-	Jobs       []jobView    `json:"jobs"`
-	Page       int          `json:"page"`
-	PageSize   int          `json:"page_size"`
-	Total      int          `json:"total"`
-	TotalPages int          `json:"total_pages"`
-	Stats      jobStatsView `json:"stats"`
+	Jobs       []jobView `json:"jobs"`
+	Page       int       `json:"page"`
+	PageSize   int       `json:"page_size"`
+	Total      int       `json:"total"`
+	TotalPages int       `json:"total_pages"`
+	HasMore    bool      `json:"has_more"`
 }
 
 type jobStatsView struct {
@@ -360,14 +365,31 @@ func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jobs, err := c.store.ListJobsFiltered(r.Context(), filter, pageSize, offset)
+	jobs, err := c.store.ListJobsFiltered(r.Context(), filter, pageSize+1, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	total, err := c.store.CountJobsFiltered(r.Context(), filter)
+	hasMore := len(jobs) > pageSize
+	if hasMore {
+		jobs = jobs[:pageSize]
+	}
+	out := make([]jobView, 0, len(jobs))
+	for _, j := range jobs {
+		out = append(out, toJobView(j))
+	}
+	writeJSON(w, http.StatusOK, jobsResponse{
+		Jobs:     out,
+		Page:     page,
+		PageSize: pageSize,
+		HasMore:  hasMore,
+	})
+}
+
+func (c *Console) handleJobStats(w http.ResponseWriter, r *http.Request) {
+	filter, err := parseJobFilter(r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	stats, err := c.store.JobStatsFiltered(r.Context(), filter)
@@ -375,68 +397,83 @@ func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	out := make([]jobView, 0, len(jobs))
-	for _, j := range jobs {
-		jv := jobView{
-			ID:        j.ID,
-			Owner:     j.PR.Owner,
-			Repo:      j.PR.Repo,
-			Number:    j.PR.Number,
-			Event:     string(j.Event),
-			Action:    j.Action,
-			Status:    string(j.Status),
-			Attempts:  j.Attempts,
-			Error:     j.Error,
-			SessionID: j.SessionID,
+	writeJSON(w, http.StatusOK, toJobStatsView(stats))
+}
+
+func (c *Console) handleJobDetail(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := c.store.GetJobView(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "job not found")
+			return
 		}
-		if !j.CreatedAt.IsZero() {
-			jv.CreatedAt = j.CreatedAt.Format(timeLayout)
-		}
-		if j.StartedAt != nil && !j.StartedAt.IsZero() {
-			jv.StartedAt = j.StartedAt.Format(timeLayout)
-		}
-		if j.FinishedAt != nil && !j.FinishedAt.IsZero() {
-			jv.FinishedAt = j.FinishedAt.Format(timeLayout)
-		}
-		if len(j.Logs) > 0 {
-			jv.Logs = make([]jobLogView, 0, len(j.Logs))
-			for _, l := range j.Logs {
-				lv := jobLogView{Stage: l.Stage, Message: l.Message}
-				if !l.CreatedAt.IsZero() {
-					lv.CreatedAt = l.CreatedAt.Format(timeLayout)
-				}
-				jv.Logs = append(jv.Logs, lv)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, toJobView(*job))
+}
+
+func toJobView(j model.JobView) jobView {
+	jv := jobView{
+		ID:        j.ID,
+		Owner:     j.PR.Owner,
+		Repo:      j.PR.Repo,
+		Number:    j.PR.Number,
+		Event:     string(j.Event),
+		Action:    j.Action,
+		Status:    string(j.Status),
+		Attempts:  j.Attempts,
+		Error:     j.Error,
+		SessionID: j.SessionID,
+		LogCount:  j.LogCount,
+	}
+	if !j.CreatedAt.IsZero() {
+		jv.CreatedAt = j.CreatedAt.Format(timeLayout)
+	}
+	if j.StartedAt != nil && !j.StartedAt.IsZero() {
+		jv.StartedAt = j.StartedAt.Format(timeLayout)
+	}
+	if j.FinishedAt != nil && !j.FinishedAt.IsZero() {
+		jv.FinishedAt = j.FinishedAt.Format(timeLayout)
+	}
+	if len(j.Logs) > 0 {
+		jv.Logs = make([]jobLogView, 0, len(j.Logs))
+		for _, l := range j.Logs {
+			lv := jobLogView{Stage: l.Stage, Message: l.Message}
+			if !l.CreatedAt.IsZero() {
+				lv.CreatedAt = l.CreatedAt.Format(timeLayout)
 			}
+			jv.Logs = append(jv.Logs, lv)
 		}
-		out = append(out, jv)
+		if jv.LogCount == 0 {
+			jv.LogCount = len(j.Logs)
+		}
 	}
-	totalPages := 0
-	if total > 0 {
-		totalPages = (total + pageSize - 1) / pageSize
-	}
+	return jv
+}
+
+func toJobStatsView(stats model.JobStats) jobStatsView {
 	completed := stats.Done + stats.Failed
 	successRate := 0.0
 	if completed > 0 {
 		successRate = float64(stats.Done) / float64(completed)
 	}
-	writeJSON(w, http.StatusOK, jobsResponse{
-		Jobs:       out,
-		Page:       page,
-		PageSize:   pageSize,
-		Total:      total,
-		TotalPages: totalPages,
-		Stats: jobStatsView{
-			TotalJobs:    stats.TotalJobs,
-			ReviewJobs:   stats.ReviewJobs,
-			ReviewedJobs: stats.ReviewedJobs,
-			Done:         stats.Done,
-			Failed:       stats.Failed,
-			Running:      stats.Running,
-			Pending:      stats.Pending,
-			Superseded:   stats.Superseded,
-			SuccessRate:  successRate,
-		},
-	})
+	return jobStatsView{
+		TotalJobs:    stats.TotalJobs,
+		ReviewJobs:   stats.ReviewJobs,
+		ReviewedJobs: stats.ReviewedJobs,
+		Done:         stats.Done,
+		Failed:       stats.Failed,
+		Running:      stats.Running,
+		Pending:      stats.Pending,
+		Superseded:   stats.Superseded,
+		SuccessRate:  successRate,
+	}
 }
 
 type analysisReportView struct {

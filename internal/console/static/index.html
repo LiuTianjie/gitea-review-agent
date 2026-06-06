@@ -224,68 +224,6 @@
     gap: 10px;
     margin-bottom: 14px;
   }
-  .filter-bar {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(180px, 1fr)) auto auto;
-    align-items: end;
-    gap: 10px;
-    margin: 0 0 14px;
-    padding: 12px;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    background: var(--panel-subtle);
-  }
-  .filter-bar label { margin-top: 0; }
-  .filter-bar button { margin: 0; }
-  .date-picker-popover {
-    position: fixed;
-    z-index: 40;
-    width: 286px;
-    padding: 10px;
-    border: 1px solid var(--line-strong);
-    border-radius: 10px;
-    background: #fff;
-    box-shadow: 0 16px 42px rgba(16,16,16,.14);
-  }
-  .date-picker-head {
-    display: grid;
-    grid-template-columns: 32px 1fr 32px;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 8px;
-  }
-  .date-picker-title { text-align: center; font-size: 13px; font-weight: 720; }
-  .date-picker-popover button {
-    min-height: 30px;
-    margin: 0;
-    padding: 0;
-    border-radius: 7px;
-    font-size: 12px;
-  }
-  .date-picker-nav { background: #fff; color: var(--text); border-color: var(--line-strong); }
-  .date-picker-week,
-  .date-picker-grid {
-    display: grid;
-    grid-template-columns: repeat(7, 1fr);
-    gap: 4px;
-  }
-  .date-picker-week span {
-    height: 24px;
-    display: grid;
-    place-items: center;
-    color: var(--muted);
-    font-size: 11px;
-    font-weight: 680;
-  }
-  .date-picker-day {
-    background: #fff;
-    color: var(--text);
-    border-color: transparent;
-  }
-  .date-picker-day:hover { background: var(--panel-subtle); border-color: var(--line-strong); transform: none; }
-  .date-picker-day.is-muted { color: var(--faint); }
-  .date-picker-day.is-today { border-color: var(--black); }
-  .date-picker-day.is-selected { background: var(--black); color: #fff; border-color: var(--black); }
   .stat-card {
     min-height: 82px;
     padding: 13px;
@@ -504,7 +442,6 @@
     .section-bar { align-items: flex-start; flex-direction: column; }
     .section-actions { justify-content: flex-start; width: 100%; }
     .stats-grid { grid-template-columns: 1fr 1fr; }
-    .filter-bar { grid-template-columns: 1fr; }
     .pager { width: 100%; justify-content: space-between; }
     .detail-grid { grid-template-columns: 1fr; }
     .log-item { grid-template-columns: 1fr; }
@@ -571,18 +508,6 @@
       <div class="stat-card"><span>成功审核</span><strong>--</strong><small>已完成 PR review</small></div>
       <div class="stat-card"><span>失败</span><strong>--</strong><small>需要排查</small></div>
       <div class="stat-card"><span>运行/等待</span><strong>--</strong><small>running + pending</small></div>
-    </div>
-    <div class="filter-bar" aria-label="任务时间筛选">
-      <div>
-        <label for="jobsCreatedFrom">创建时间从</label>
-        <input id="jobsCreatedFrom" type="date">
-      </div>
-      <div>
-        <label for="jobsCreatedTo">创建时间到</label>
-        <input id="jobsCreatedTo" type="date">
-      </div>
-      <button id="applyJobsFilterBtn" type="button">应用</button>
-      <button class="secondary" id="clearJobsFilterBtn" type="button">清空</button>
     </div>
     <div class="jobs-layout">
       <div class="table-wrap">
@@ -829,12 +754,14 @@
   var jobsPageSize = 20;
   var jobsTotal = 0;
   var jobsTotalPages = 1;
+  var jobsHasMore = false;
   var jobsStats = null;
   var jobsLoading = false;
   var jobsReloadQueued = false;
+  var jobsStatsLoading = false;
+  var jobDetailCache = {};
+  var jobDetailRequestToken = 0;
   var analysisLoaded = false;
-  var activeDateInput = null;
-  var datePickerMonth = null;
 
   function $(id){ return document.getElementById(id); }
   function show(el, text, ok){ el.textContent = text; el.className = "msg " + (ok ? "ok" : "err"); }
@@ -959,46 +886,26 @@
     }).catch(function(e){ show($("effectiveMsg"), "读取失败：" + e, false); });
   }
 
-  function dateInputToISO(id, endOfDay){
-    var el = $(id);
-    if (!el || !el.value) return "";
-    var parts = el.value.split("-").map(function(part){ return parseInt(part, 10); });
-    if (parts.length !== 3 || parts.some(function(n){ return !n; })) return "";
-    var d = endOfDay
-      ? new Date(parts[0], parts[1] - 1, parts[2], 23, 59, 59, 999)
-      : new Date(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0);
-    return isNaN(d.getTime()) ? "" : d.toISOString();
-  }
-
   function jobsURL(){
     var params = new URLSearchParams();
     params.set("page", jobsPage);
     params.set("page_size", jobsPageSize);
-    var from = dateInputToISO("jobsCreatedFrom", false);
-    var to = dateInputToISO("jobsCreatedTo", true);
-    if (from) params.set("created_from", from);
-    if (to) params.set("created_to", to);
     return "/admin/api/jobs?" + params.toString();
   }
 
-  function jobsFilterLabel(){
-    var from = $("jobsCreatedFrom") && $("jobsCreatedFrom").value;
-    var to = $("jobsCreatedTo") && $("jobsCreatedTo").value;
-    if (from && to) return " · " + from + " 至 " + to;
-    if (from) return " · 从 " + from;
-    if (to) return " · 到 " + to;
-    return " · 全部时间";
+  function jobStatsURL(){
+    return "/admin/api/jobs/stats";
   }
 
   function loadJobs(){
     if (jobsLoading) {
       jobsReloadQueued = true;
-      return;
+      return Promise.resolve();
     }
     jobsLoading = true;
     jobsReloadQueued = false;
     var url = jobsURL();
-    fetch(url).then(function(r){ return r.json(); }).then(function(payload){
+    return fetch(url).then(function(r){ return r.json(); }).then(function(payload){
       if (payload && payload.ok === false) throw new Error(payload.error || "加载失败");
       if (Array.isArray(payload)) {
         payload = {jobs: payload, page: 1, page_size: payload.length || jobsPageSize, total: payload.length || 0, total_pages: 1, stats: null};
@@ -1006,156 +913,73 @@
       jobCache = payload.jobs || [];
       jobsPage = payload.page || jobsPage;
       jobsPageSize = payload.page_size || jobsPageSize;
-      jobsTotal = payload.total || 0;
-      jobsTotalPages = payload.total_pages || (jobsTotal ? 1 : 0);
-      jobsStats = payload.stats || null;
+      jobsHasMore = !!payload.has_more;
       renderJobs();
-      renderJobStats();
       renderPager();
-      if (selectedJobID && findJob(selectedJobID)) renderJobDetail(findJob(selectedJobID));
-      else if (jobCache.length) { selectedJobID = jobCache[0].id; renderJobs(); renderJobDetail(jobCache[0]); }
+      if (selectedJobID && findJob(selectedJobID)) selectJob(selectedJobID, true);
+      else if (jobCache.length) { selectedJobID = jobCache[0].id; renderJobs(); selectJob(selectedJobID, false); }
       else renderEmptyJobDetail();
-      $("jobsMeta").textContent = "更新于 " + new Date().toLocaleTimeString() + " · 共 " + jobsTotal + " 条" + jobsFilterLabel();
+      $("jobsMeta").textContent = "更新于 " + new Date().toLocaleTimeString() + " · 当前页 " + jobCache.length + " 条";
     }).catch(function(e){ $("jobsBody").innerHTML = '<tr><td colspan="10" class="err">加载失败：' + esc(e) + '</td></tr>'; })
       .finally(function(){
         jobsLoading = false;
-        if (jobsReloadQueued) loadJobs();
+        if (jobsReloadQueued) return loadJobs();
       });
   }
 
-  function applyJobsFilter(){
-    jobsPage = 1;
-    selectedJobID = null;
-    loadJobs();
+  function loadJobStats(){
+    if (jobsStatsLoading) return Promise.resolve();
+    jobsStatsLoading = true;
+    return fetch(jobStatsURL()).then(function(r){ return r.json(); }).then(function(payload){
+      if (payload && payload.ok === false) throw new Error(payload.error || "加载失败");
+      jobsStats = payload || null;
+      jobsTotal = jobsStats ? (jobsStats.total_jobs || 0) : 0;
+      jobsTotalPages = jobsTotal ? Math.ceil(jobsTotal / jobsPageSize) : 1;
+      jobsHasMore = jobsPage < jobsTotalPages;
+      renderJobStats();
+      renderPager();
+      if (jobsStats) $("jobsMeta").textContent = "更新于 " + new Date().toLocaleTimeString() + " · 共 " + jobsTotal + " 条";
+    }).catch(function(e){ console.warn("load job stats failed", e); })
+      .finally(function(){ jobsStatsLoading = false; });
   }
 
-  function clearJobsFilter(){
-    $("jobsCreatedFrom").value = "";
-    $("jobsCreatedTo").value = "";
-    applyJobsFilter();
+  function refreshJobsAndStats(){
+    return loadJobs().then(function(){ return loadJobStats(); });
   }
 
-  function openDatePicker(input, allowFallback){
-    if (!input) return false;
-    if (typeof input.showPicker === "function") {
-      try {
-        input.showPicker();
-        hideDatePicker();
-        return true;
-      } catch (_) {
-        if (!allowFallback) return false;
+  function loadJobDetail(id, summary){
+    if (!id) return;
+    var token = ++jobDetailRequestToken;
+    if (summary) renderJobDetail(Object.assign({}, summary, {logs_loading:true}));
+    fetch("/admin/api/jobs/" + encodeURIComponent(id)).then(function(r){ return r.json(); }).then(function(payload){
+      if (payload && payload.ok === false) throw new Error(payload.error || "加载失败");
+      if (token !== jobDetailRequestToken || String(selectedJobID) !== String(id)) return;
+      jobDetailCache[id] = payload;
+      for (var i = 0; i < jobCache.length; i++) {
+        if (String(jobCache[i].id) === String(id)) jobCache[i] = Object.assign({}, jobCache[i], payload);
       }
-    }
-    if (allowFallback) showDatePicker(input);
-    return !!allowFallback;
-  }
-
-  function parseDateValue(value){
-    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
-    if (!m) return new Date();
-    return new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
-  }
-
-  function formatDateValue(date){
-    var y = date.getFullYear();
-    var m = String(date.getMonth() + 1).padStart(2, "0");
-    var d = String(date.getDate()).padStart(2, "0");
-    return y + "-" + m + "-" + d;
-  }
-
-  function sameDate(a, b){
-    return a && b && a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-  }
-
-  function ensureDatePicker(){
-    var picker = $("datePickerPopover");
-    if (picker) return picker;
-    picker = document.createElement("div");
-    picker.id = "datePickerPopover";
-    picker.className = "date-picker-popover";
-    picker.hidden = true;
-    picker.setAttribute("role", "dialog");
-    picker.setAttribute("aria-label", "日期选择器");
-    document.body.appendChild(picker);
-    picker.addEventListener("click", function(e){
-      e.stopPropagation();
-      var nav = e.target.closest("[data-date-nav]");
-      if (nav) {
-        datePickerMonth = new Date(datePickerMonth.getFullYear(), datePickerMonth.getMonth() + parseInt(nav.getAttribute("data-date-nav"), 10), 1);
-        renderDatePicker();
-        return;
-      }
-      var day = e.target.closest("[data-date-value]");
-      if (day && activeDateInput) {
-        activeDateInput.value = day.getAttribute("data-date-value");
-        activeDateInput.dispatchEvent(new Event("change", {bubbles: true}));
-        hideDatePicker();
-      }
+      renderJobs();
+      renderJobDetail(payload);
+    }).catch(function(e){
+      if (token !== jobDetailRequestToken || String(selectedJobID) !== String(id)) return;
+      var fallback = summary || findJob(id) || {id:id};
+      renderJobDetail(Object.assign({}, fallback, {logs_error:String(e)}));
     });
-    return picker;
   }
 
-  function showDatePicker(input){
-    activeDateInput = input;
-    datePickerMonth = parseDateValue(input.value);
-    var picker = ensureDatePicker();
-    picker.hidden = false;
-    renderDatePicker();
-    var rect = input.getBoundingClientRect();
-    var left = Math.min(rect.left, window.innerWidth - picker.offsetWidth - 12);
-    picker.style.left = Math.max(12, left) + "px";
-    picker.style.top = Math.min(rect.bottom + 6, window.innerHeight - picker.offsetHeight - 12) + "px";
-  }
-
-  function hideDatePicker(){
-    var picker = $("datePickerPopover");
-    if (picker) picker.hidden = true;
-    activeDateInput = null;
-  }
-
-  function renderDatePicker(){
-    var picker = ensureDatePicker();
-    var month = datePickerMonth || new Date();
-    var selected = activeDateInput ? parseDateValue(activeDateInput.value) : null;
-    var today = new Date();
-    var first = new Date(month.getFullYear(), month.getMonth(), 1);
-    var start = new Date(first);
-    start.setDate(first.getDate() - first.getDay());
-    var html = "<div class='date-picker-head'>" +
-      "<button class='date-picker-nav' type='button' data-date-nav='-1' aria-label='上个月'>‹</button>" +
-      "<div class='date-picker-title'>" + month.getFullYear() + " 年 " + (month.getMonth() + 1) + " 月</div>" +
-      "<button class='date-picker-nav' type='button' data-date-nav='1' aria-label='下个月'>›</button>" +
-      "</div><div class='date-picker-week'><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>" +
-      "<div class='date-picker-grid'>";
-    for (var i = 0; i < 42; i++) {
-      var day = new Date(start);
-      day.setDate(start.getDate() + i);
-      var cls = "date-picker-day";
-      if (day.getMonth() !== month.getMonth()) cls += " is-muted";
-      if (sameDate(day, today)) cls += " is-today";
-      if (sameDate(day, selected)) cls += " is-selected";
-      html += "<button class='" + cls + "' type='button' data-date-value='" + formatDateValue(day) + "'>" + day.getDate() + "</button>";
+  function selectJob(id, forceReload){
+    var summary = findJob(id);
+    if (!summary) return;
+    var cached = jobDetailCache[id];
+    if (cached && !forceReload) {
+      renderJobDetail(cached);
+      return;
     }
-    html += "</div>";
-    picker.innerHTML = html;
-  }
-
-  function wireDatePicker(id){
-    var input = $(id);
-    if (!input) return;
-    input.addEventListener("click", function(e){ e.stopPropagation(); openDatePicker(input, true); });
-    input.addEventListener("focus", function(){ if (typeof input.showPicker !== "function") openDatePicker(input, true); });
-    var label = document.querySelector("label[for='" + id + "']");
-    if (label) {
-      label.addEventListener("click", function(e){
-        e.preventDefault();
-        input.focus();
-        openDatePicker(input, true);
-      });
-    }
+    loadJobDetail(id, summary);
   }
 
   function renderJobStats(){
+    if (!jobsStats) return;
     var s = jobsStats || {};
     var completed = (s.done || 0) + (s.failed || 0);
     var rate = completed > 0 && typeof s.success_rate === "number" ? Math.round(s.success_rate * 1000) / 10 + "%" : "--";
@@ -1168,17 +992,17 @@
   }
 
   function renderPager(){
-    var pages = jobsTotalPages || 1;
-    $("jobsPageMeta").textContent = jobsPage + " / " + pages;
+    var pages = jobsTotal ? (jobsTotalPages || 1) : (jobsHasMore ? jobsPage + 1 : jobsPage);
+    $("jobsPageMeta").textContent = jobsTotal ? jobsPage + " / " + pages : jobsPage + " / " + (jobsHasMore ? "…" : pages);
     $("prevJobsBtn").disabled = jobsPage <= 1;
-    $("nextJobsBtn").disabled = jobsPage >= pages;
+    $("nextJobsBtn").disabled = jobsTotal ? jobsPage >= pages : !jobsHasMore;
     $("jobsPageSize").value = String(jobsPageSize);
   }
 
   function goJobsPage(delta){
     var next = jobsPage + delta;
-    var pages = jobsTotalPages || 1;
-    if (next < 1 || next > pages) return;
+    var pages = jobsTotal ? (jobsTotalPages || 1) : (jobsHasMore ? jobsPage + 1 : jobsPage);
+    if (next < 1 || (delta > 0 && next > pages) || (delta < 0 && next > pages)) return;
     jobsPage = next;
     selectedJobID = null;
     loadJobs();
@@ -1189,8 +1013,10 @@
     if (!n || n < 1) n = 20;
     jobsPageSize = n;
     jobsPage = 1;
+    jobsTotal = 0;
+    jobsTotalPages = 1;
     selectedJobID = null;
-    loadJobs();
+    refreshJobsAndStats();
   }
 
   function renderJobs(){
@@ -1205,7 +1031,7 @@
       var created = prettyTime(j.created_at);
       var started = prettyTime(j.started_at);
       var sess = j.session_id ? "<code>" + esc(j.session_id.slice(0,8)) + "</code>" : "";
-      var logCount = (j.logs && j.logs.length) ? j.logs.length : 0;
+      var logCount = typeof j.log_count === "number" ? j.log_count : ((j.logs && j.logs.length) ? j.logs.length : 0);
       var err = j.error ? " + error" : "";
       var selected = String(j.id) === String(selectedJobID) ? " selected" : "";
       return "<tr class='job-row" + selected + "' data-job-id='" + esc(j.id) + "'><td>" + esc(j.id) +
@@ -1228,12 +1054,21 @@
     var logs = [];
     if (j.error) logs.push({stage: "error", message: j.error, created_at: j.finished_at || j.started_at || j.created_at});
     (j.logs || []).forEach(function(l){ logs.push(l); });
-    var timeline = logs.length ? logs.map(function(l){
+    var timeline = "";
+    if (j.logs_loading) {
+      timeline = "<div class='empty-state'>日志加载中…</div>";
+    } else if (j.logs_error) {
+      timeline = "<div class='empty-state err'>日志加载失败：" + esc(j.logs_error) + "</div>";
+    } else if (logs.length) {
+      timeline = logs.map(function(l){
       var ts = prettyTime(l.created_at);
       return "<div class='log-item'><div class='log-stage'>" + esc(l.stage || "log") +
              (ts ? "<br><span class='muted'>" + esc(ts) + "</span>" : "") +
              "</div><div class='log-message'>" + esc(l.message || "") + "</div></div>";
-    }).join("") : "<div class='empty-state'>这个任务还没有日志</div>";
+      }).join("");
+    } else {
+      timeline = "<div class='empty-state'>这个任务还没有日志</div>";
+    }
     $("jobDetail").innerHTML =
       "<div class='detail-head'><div><h3 class='detail-title'>任务 #" + esc(j.id) + "</h3>" +
       "<p class='detail-subtitle'>" + pr + "</p></div><span class='badge s-" + st + "'>" + st + "</span></div>" +
@@ -1326,7 +1161,7 @@
     if (row) {
       selectedJobID = row.getAttribute("data-job-id");
       renderJobs();
-      renderJobDetail(findJob(selectedJobID));
+      selectJob(selectedJobID, true);
       return;
     }
     hideDatePicker();
@@ -1339,23 +1174,18 @@
   $("effectiveBtn").addEventListener("click", loadEffectiveConfig);
   $("uploadBtn").addEventListener("click", uploadAuth);
   $("statusBtn").addEventListener("click", checkStatus);
-  $("jobsBtn").addEventListener("click", loadJobs);
+  $("jobsBtn").addEventListener("click", refreshJobsAndStats);
   $("analysisCreateBtn").addEventListener("click", createAnalysisReport);
   $("analysisRefreshBtn").addEventListener("click", loadAnalysisLatest);
   $("prevJobsBtn").addEventListener("click", function(){ goJobsPage(-1); });
   $("nextJobsBtn").addEventListener("click", function(){ goJobsPage(1); });
   $("jobsPageSize").addEventListener("change", changeJobsPageSize);
-  $("applyJobsFilterBtn").addEventListener("click", applyJobsFilter);
-  $("clearJobsFilterBtn").addEventListener("click", clearJobsFilter);
-  $("jobsCreatedFrom").addEventListener("keydown", function(e){ if (e.key === "Enter") applyJobsFilter(); });
-  $("jobsCreatedTo").addEventListener("keydown", function(e){ if (e.key === "Enter") applyJobsFilter(); });
-  wireDatePicker("jobsCreatedFrom");
-  wireDatePicker("jobsCreatedTo");
 
   loadSettings();
   loadEffectiveConfig();
-  loadJobs();
+  refreshJobsAndStats();
   setInterval(loadJobs, 10000);
+  setInterval(loadJobStats, 60000);
 })();
 </script>
 </body>

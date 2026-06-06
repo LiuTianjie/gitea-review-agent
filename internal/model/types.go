@@ -302,6 +302,7 @@ type JobView struct {
 	StartedAt  *time.Time
 	FinishedAt *time.Time
 	SessionID  string
+	LogCount   int
 	Logs       []JobLog
 }
 
@@ -416,6 +417,7 @@ type Store interface {
 	CountJobsFiltered(ctx context.Context, filter JobFilter) (int, error)
 	JobStats(ctx context.Context) (JobStats, error)
 	JobStatsFiltered(ctx context.Context, filter JobFilter) (JobStats, error)
+	GetJobView(ctx context.Context, id int64) (*JobView, error)
 	GetJob(ctx context.Context, id int64) (*Job, error)
 
 	// Pulls / sessions
