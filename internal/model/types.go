@@ -65,6 +65,22 @@ const (
 	JobSuperseded JobStatus = "superseded"
 )
 
+// ErrorType classifies failed work so the console can distinguish retryable
+// provider/network problems from configuration or auth issues.
+type ErrorType string
+
+const (
+	ErrorTypeUnknown  ErrorType = "unknown"
+	ErrorTypeGit      ErrorType = "git"
+	ErrorTypeGitea    ErrorType = "gitea"
+	ErrorTypeAuth     ErrorType = "auth"
+	ErrorTypeReviewer ErrorType = "reviewer"
+	ErrorTypeUpstream ErrorType = "upstream"
+	ErrorTypeTimeout  ErrorType = "timeout"
+	ErrorTypeConfig   ErrorType = "config"
+	ErrorTypeQueue    ErrorType = "queue"
+)
+
 // ReviewEventType is the Gitea review verdict.
 type ReviewEventType string
 
@@ -117,18 +133,30 @@ type WebhookEvent struct {
 
 // Job is a queued unit of work derived from a WebhookEvent.
 type Job struct {
-	ID         int64
-	DeliveryID string
-	PR         PRRef
-	Event      EventType
-	Action     string
-	Payload    []byte // serialized WebhookEvent
-	Status     JobStatus
-	Attempts   int
-	Error      string
-	CreatedAt  time.Time
-	StartedAt  *time.Time
-	FinishedAt *time.Time
+	ID            int64
+	DeliveryID    string
+	PR            PRRef
+	Event         EventType
+	Action        string
+	Payload       []byte // serialized WebhookEvent
+	Status        JobStatus
+	Attempts      int
+	Error         string
+	ErrorType     ErrorType
+	Retryable     bool
+	CreatedAt     time.Time
+	StartedAt     *time.Time
+	FinishedAt    *time.Time
+	NextAttemptAt *time.Time
+}
+
+// JobFinish carries terminal state, retry scheduling, and error metadata.
+type JobFinish struct {
+	Status        JobStatus
+	Error         string
+	ErrorType     ErrorType
+	Retryable     bool
+	NextAttemptAt *time.Time
 }
 
 // ---------- Codex / Review ----------
@@ -291,19 +319,22 @@ type GiteaReview struct {
 
 // JobView is a read model for the console job list.
 type JobView struct {
-	ID         int64
-	PR         PRRef
-	Event      EventType
-	Action     string
-	Status     JobStatus
-	Attempts   int
-	Error      string
-	CreatedAt  time.Time
-	StartedAt  *time.Time
-	FinishedAt *time.Time
-	SessionID  string
-	LogCount   int
-	Logs       []JobLog
+	ID            int64
+	PR            PRRef
+	Event         EventType
+	Action        string
+	Status        JobStatus
+	Attempts      int
+	Error         string
+	ErrorType     ErrorType
+	Retryable     bool
+	CreatedAt     time.Time
+	StartedAt     *time.Time
+	FinishedAt    *time.Time
+	NextAttemptAt *time.Time
+	SessionID     string
+	LogCount      int
+	Logs          []JobLog
 }
 
 // JobLog is a timestamped progress entry for a queued job.
@@ -409,6 +440,8 @@ type Store interface {
 	SupersedePending(ctx context.Context, pr PRRef) error
 	ClaimJob(ctx context.Context) (*Job, error) // next pending -> running; nil if none
 	FinishJob(ctx context.Context, id int64, status JobStatus, errMsg string) error
+	FinishJobDetailed(ctx context.Context, id int64, finish JobFinish) error
+	RerunJob(ctx context.Context, id int64) (*Job, error)
 	RecoverRunning(ctx context.Context) error // running -> pending on boot
 	AppendJobLog(ctx context.Context, jobID int64, stage, message string) error
 	ListJobs(ctx context.Context, limit, offset int) ([]JobView, error)

@@ -539,37 +539,85 @@ func (o *Orchestrator) handleComment(ctx context.Context, jobID int64, ev *model
 	}
 
 	o.jobLog(ctx, jobID, "state", "loading prior PR session")
-	reviewer := o.primaryReviewer()
-	if reviewer == nil {
+	reviewers, question := o.commentReviewers(question)
+	if len(reviewers) == 0 {
 		return fmt.Errorf("no reviewer configured")
 	}
+
+	answers := make([]string, 0, len(reviewers))
+	for _, reviewer := range reviewers {
+		answer, err := o.askReviewer(ctx, jobID, ev, reviewer, question)
+		if err != nil {
+			return err
+		}
+		if len(reviewers) == 1 {
+			answers = append(answers, answer)
+		} else {
+			answers = append(answers, "## "+reviewerDisplayName(reviewer.Name())+"\n\n"+answer)
+		}
+	}
+	o.jobLog(ctx, jobID, "gitea", "posting answer comment")
+	_, err := o.Gitea.PostComment(ctx, ev.PR, strings.Join(answers, "\n\n---\n\n"))
+	return err
+}
+
+func (o *Orchestrator) askReviewer(ctx context.Context, jobID int64, ev *model.WebhookEvent, reviewer model.Reviewer, question string) (string, error) {
 	prev, err := o.Store.GetReviewerState(ctx, ev.PR, reviewer.Name())
 	if err != nil {
-		return fmt.Errorf("get pull: %w", err)
+		return "", fmt.Errorf("%s get pull: %w", reviewer.Name(), err)
 	}
 	if prev == nil || prev.SessionID == "" {
-		o.jobLog(ctx, jobID, "gitea", "posting missing-session comment")
-		_, perr := o.Gitea.PostComment(ctx, ev.PR, "我还没有审查过这个 PR，因此没有可继续的会话。请先推送一次提交或重新打开 PR 来触发审查。")
-		return perr
+		o.jobLog(ctx, jobID, "gitea", "missing session for "+reviewer.Name())
+		return "我还没有使用 " + reviewerDisplayName(reviewer.Name()) + " 审查过这个 PR，因此没有可继续的会话。请先推送一次提交或重新打开 PR 来触发审查。", nil
 	}
 
-	o.jobLog(ctx, jobID, "git", "preparing worktree")
+	o.jobLog(ctx, jobID, "git", "preparing worktree for "+reviewer.Name())
 	worktree, err := o.Cache.Prepare(ctx, ev.PR, ev.CloneURL, prev.BaseRef, ev.HeadRef, prev.HeadSHA)
 	if err != nil {
-		return fmt.Errorf("git prepare: %w", err)
+		return "", fmt.Errorf("git prepare: %w", err)
 	}
 	defer o.Cache.Cleanup(ev.PR)
-	o.jobLog(ctx, jobID, "git", "worktree ready")
+	o.jobLog(ctx, jobID, "git", "worktree ready for "+reviewer.Name())
 
 	o.jobLog(ctx, jobID, reviewer.Name(), "answer started")
 	answer, err := reviewer.Ask(ctx, prev.SessionID, worktree, question)
 	if err != nil {
-		return fmt.Errorf("%s ask: %w", reviewer.Name(), err)
+		return "", fmt.Errorf("%s ask: %w", reviewer.Name(), err)
 	}
 	o.jobLog(ctx, jobID, reviewer.Name(), "answer finished")
-	o.jobLog(ctx, jobID, "gitea", "posting answer comment")
-	_, err = o.Gitea.PostComment(ctx, ev.PR, answer)
-	return err
+	return answer, nil
+}
+
+func (o *Orchestrator) commentReviewers(question string) ([]model.Reviewer, string) {
+	reviewers := o.reviewers()
+	if len(reviewers) == 0 {
+		return nil, question
+	}
+	trimmed := strings.TrimSpace(question)
+	first, rest, hasFirst := strings.Cut(trimmed, " ")
+	if !hasFirst {
+		first = trimmed
+		rest = ""
+	}
+	target := strings.ToLower(strings.TrimSpace(first))
+	if target == "all" {
+		if strings.TrimSpace(rest) == "" {
+			rest = "请重新审查当前 diff，并回答仍然需要关注的问题。"
+		}
+		return reviewers, strings.TrimSpace(rest)
+	}
+	for _, reviewer := range reviewers {
+		if normalizeAgentName(reviewer.Name()) == target {
+			if strings.TrimSpace(rest) == "" {
+				rest = "请重新审查当前 diff，并回答仍然需要关注的问题。"
+			}
+			return []model.Reviewer{reviewer}, strings.TrimSpace(rest)
+		}
+	}
+	if primary := o.primaryReviewer(); primary != nil {
+		return []model.Reviewer{primary}, question
+	}
+	return nil, question
 }
 
 // matchTrigger returns the text following a trigger keyword, if present.

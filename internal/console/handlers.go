@@ -102,6 +102,7 @@ func (c *Console) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/api/jobs", c.handleJobs)
 	mux.HandleFunc("GET /admin/api/jobs/stats", c.handleJobStats)
 	mux.HandleFunc("GET /admin/api/jobs/{id}", c.handleJobDetail)
+	mux.HandleFunc("POST /admin/api/jobs/{id}/rerun", c.handleJobRerun)
 	mux.HandleFunc("POST /admin/api/analytics/reports", c.handleCreateAnalysisReport)
 	mux.HandleFunc("GET /admin/api/analytics/reports/latest", c.handleLatestAnalysisReport)
 	mux.HandleFunc("GET /admin/api/analytics/reports", c.handleListAnalysisReports)
@@ -308,21 +309,24 @@ func (c *Console) handleEffectiveConfig(w http.ResponseWriter, r *http.Request) 
 
 // jobView is the JSON shape returned to the console, with PRRef flattened.
 type jobView struct {
-	ID         int64        `json:"id"`
-	Owner      string       `json:"owner"`
-	Repo       string       `json:"repo"`
-	Number     int          `json:"number"`
-	Event      string       `json:"event"`
-	Action     string       `json:"action"`
-	Status     string       `json:"status"`
-	Attempts   int          `json:"attempts"`
-	Error      string       `json:"error"`
-	CreatedAt  string       `json:"created_at"`
-	StartedAt  string       `json:"started_at"`
-	FinishedAt string       `json:"finished_at"`
-	SessionID  string       `json:"session_id"`
-	LogCount   int          `json:"log_count"`
-	Logs       []jobLogView `json:"logs"`
+	ID            int64        `json:"id"`
+	Owner         string       `json:"owner"`
+	Repo          string       `json:"repo"`
+	Number        int          `json:"number"`
+	Event         string       `json:"event"`
+	Action        string       `json:"action"`
+	Status        string       `json:"status"`
+	Attempts      int          `json:"attempts"`
+	Error         string       `json:"error"`
+	ErrorType     string       `json:"error_type"`
+	Retryable     bool         `json:"retryable"`
+	CreatedAt     string       `json:"created_at"`
+	StartedAt     string       `json:"started_at"`
+	FinishedAt    string       `json:"finished_at"`
+	NextAttemptAt string       `json:"next_attempt_at"`
+	SessionID     string       `json:"session_id"`
+	LogCount      int          `json:"log_count"`
+	Logs          []jobLogView `json:"logs"`
 }
 
 type jobLogView struct {
@@ -427,6 +431,32 @@ func (c *Console) handleJobDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toJobView(*job))
 }
 
+func (c *Console) handleJobRerun(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := c.store.RerunJob(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "job not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job": toJobView(model.JobView{
+		ID: job.ID, PR: job.PR, Event: job.Event, Action: job.Action, Status: job.Status,
+		Attempts: job.Attempts, Error: job.Error, ErrorType: job.ErrorType, Retryable: job.Retryable,
+		CreatedAt: job.CreatedAt, StartedAt: job.StartedAt, FinishedAt: job.FinishedAt,
+		NextAttemptAt: job.NextAttemptAt,
+	})})
+}
+
 func toJobView(j model.JobView) jobView {
 	jv := jobView{
 		ID:        j.ID,
@@ -438,6 +468,8 @@ func toJobView(j model.JobView) jobView {
 		Status:    string(j.Status),
 		Attempts:  j.Attempts,
 		Error:     j.Error,
+		ErrorType: string(j.ErrorType),
+		Retryable: j.Retryable,
 		SessionID: j.SessionID,
 		LogCount:  j.LogCount,
 	}
@@ -449,6 +481,9 @@ func toJobView(j model.JobView) jobView {
 	}
 	if j.FinishedAt != nil && !j.FinishedAt.IsZero() {
 		jv.FinishedAt = j.FinishedAt.Format(timeLayout)
+	}
+	if j.NextAttemptAt != nil && !j.NextAttemptAt.IsZero() {
+		jv.NextAttemptAt = j.NextAttemptAt.Format(timeLayout)
 	}
 	if len(j.Logs) > 0 {
 		jv.Logs = make([]jobLogView, 0, len(j.Logs))

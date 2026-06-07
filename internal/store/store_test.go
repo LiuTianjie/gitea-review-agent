@@ -181,6 +181,74 @@ func TestClaimAndFinishJob(t *testing.T) {
 	}
 }
 
+func TestFinishJobDetailedSchedulesRetry(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	job, _, err := st.EnqueueJob(ctx, sampleEvent("d-retry"))
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	claimed, err := st.ClaimJob(ctx)
+	if err != nil || claimed == nil {
+		t.Fatalf("ClaimJob: %v / %v", claimed, err)
+	}
+	next := time.Now().UTC().Add(time.Hour)
+	if err := st.FinishJobDetailed(ctx, claimed.ID, model.JobFinish{
+		Status: model.JobPending, Error: "gitea: status 503", ErrorType: model.ErrorTypeGitea,
+		Retryable: true, NextAttemptAt: &next,
+	}); err != nil {
+		t.Fatalf("FinishJobDetailed: %v", err)
+	}
+	got, err := st.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Status != model.JobPending || got.ErrorType != model.ErrorTypeGitea || !got.Retryable || got.NextAttemptAt == nil {
+		t.Fatalf("scheduled retry job = %+v", got)
+	}
+	none, err := st.ClaimJob(ctx)
+	if err != nil {
+		t.Fatalf("ClaimJob delayed: %v", err)
+	}
+	if none != nil {
+		t.Fatalf("delayed retry claimed too early: %+v", none)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE jobs SET next_attempt_at=? WHERE id=?`, time.Now().UTC().Add(-time.Minute).Format(time.RFC3339), job.ID); err != nil {
+		t.Fatalf("make retry due: %v", err)
+	}
+	due, err := st.ClaimJob(ctx)
+	if err != nil || due == nil || due.ID != job.ID {
+		t.Fatalf("due retry claim = %+v err=%v", due, err)
+	}
+}
+
+func TestRerunJobCreatesFreshPendingJob(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	job, _, err := st.EnqueueJob(ctx, sampleEvent("d-rerun"))
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if err := st.FinishJobDetailed(ctx, job.ID, model.JobFinish{
+		Status: model.JobFailed, Error: "codex review: 503 No available channel",
+		ErrorType: model.ErrorTypeUpstream, Retryable: true,
+	}); err != nil {
+		t.Fatalf("finish failed job: %v", err)
+	}
+	rerun, err := st.RerunJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("RerunJob: %v", err)
+	}
+	if rerun.ID == job.ID || rerun.Status != model.JobPending || rerun.Attempts != 0 {
+		t.Fatalf("rerun job = %+v, original=%d", rerun, job.ID)
+	}
+	if rerun.DeliveryID == job.DeliveryID || rerun.PR != job.PR || string(rerun.Payload) != string(job.Payload) {
+		t.Fatalf("rerun did not copy job payload/PR with synthetic delivery: %+v original=%+v", rerun, job)
+	}
+}
+
 func TestClaimJobSkipsPendingSamePRWhenRunning(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()

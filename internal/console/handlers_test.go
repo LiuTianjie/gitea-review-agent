@@ -446,6 +446,24 @@ func TestJobsEndpoint(t *testing.T) {
 	if detail.LogCount != 1 || len(detail.Logs) != 1 || detail.Logs[0].Stage != "codex" || detail.Logs[0].Message != "review started" {
 		t.Fatalf("job detail logs = %+v, want codex/review started", detail)
 	}
+
+	w = do(t, h, "POST", "/admin/api/jobs/"+strconv.FormatInt(job.ID, 10)+"/rerun", "", true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("job rerun: code = %d body=%s", w.Code, w.Body.String())
+	}
+	var rerun struct {
+		OK  bool `json:"ok"`
+		Job struct {
+			ID     int64  `json:"id"`
+			Status string `json:"status"`
+		} `json:"job"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rerun); err != nil {
+		t.Fatalf("decode rerun: %v", err)
+	}
+	if !rerun.OK || rerun.Job.ID == job.ID || rerun.Job.Status != string(model.JobPending) {
+		t.Fatalf("rerun response = %+v, original=%d", rerun, job.ID)
+	}
 }
 
 func TestAnalyticsReportEndpoints(t *testing.T) {

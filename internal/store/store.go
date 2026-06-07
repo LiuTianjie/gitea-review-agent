@@ -120,6 +120,10 @@ func migrateSchema(db *sql.DB) error {
 		{table: "findings", name: "last_seen_sha", def: "TEXT"},
 		{table: "findings", name: "mapped_inline", def: "INTEGER DEFAULT 0"},
 		{table: "findings", name: "tags", def: "TEXT"},
+		{table: "jobs", name: "error_type", def: "TEXT"},
+		{table: "jobs", name: "retryable", def: "INTEGER DEFAULT 0"},
+		{table: "jobs", name: "next_attempt_at", def: "TEXT"},
+		{table: "review_runs", name: "error_type", def: "TEXT"},
 	} {
 		if err := ensureColumn(db, col.table, col.name, col.def); err != nil {
 			return err

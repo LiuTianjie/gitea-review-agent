@@ -3,7 +3,9 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,11 +19,12 @@ type Processor interface {
 
 // Queue polls the store for pending jobs and dispatches them to workers.
 type Queue struct {
-	store     model.Store
-	proc      Processor
-	workers   int
-	logger    *log.Logger
-	pollEvery time.Duration
+	store       model.Store
+	proc        Processor
+	workers     int
+	logger      *log.Logger
+	pollEvery   time.Duration
+	maxAttempts int
 
 	wake chan struct{}
 
@@ -42,14 +45,15 @@ func New(store model.Store, proc Processor, workers int, logger *log.Logger) *Qu
 		workers = 1
 	}
 	return &Queue{
-		store:     store,
-		proc:      proc,
-		workers:   workers,
-		logger:    logger,
-		pollEvery: 2 * time.Second,
-		wake:      make(chan struct{}, 1),
-		keyLocks:  map[string]*sync.Mutex{},
-		cancels:   map[string]*cancelEntry{},
+		store:       store,
+		proc:        proc,
+		workers:     workers,
+		logger:      logger,
+		pollEvery:   2 * time.Second,
+		maxAttempts: 3,
+		wake:        make(chan struct{}, 1),
+		keyLocks:    map[string]*sync.Mutex{},
+		cancels:     map[string]*cancelEntry{},
 	}
 }
 
@@ -164,20 +168,89 @@ func (q *Queue) run(parent context.Context, job *model.Job) {
 
 	q.jobLog(job.ID, "queue", "started worker run")
 	err := q.proc.Process(jobCtx, job)
-	status := model.JobDone
-	msg := ""
+	finish := model.JobFinish{Status: model.JobDone}
 	if err != nil {
 		if jobCtx.Err() != nil {
-			status = model.JobSuperseded
+			finish.Status = model.JobSuperseded
 		} else {
-			status = model.JobFailed
+			classified := classifyError(err)
+			finish.Status = model.JobFailed
+			finish.ErrorType = classified.errorType
+			finish.Retryable = classified.retryable
+			if classified.retryable && job.Attempts < q.maxAttempts {
+				delay := retryDelay(job.Attempts)
+				next := time.Now().UTC().Add(delay)
+				finish.Status = model.JobPending
+				finish.NextAttemptAt = &next
+				q.jobLog(job.ID, "queue", "retry scheduled in "+delay.String()+" ("+string(classified.errorType)+")")
+			}
 		}
-		msg = err.Error()
-		q.logf("job %d (%s#%d) %s: %v", job.ID, key, job.PR.Number, status, err)
+		finish.Error = err.Error()
+		q.logf("job %d (%s#%d) %s: %v", job.ID, key, job.PR.Number, finish.Status, err)
 	}
-	if ferr := q.store.FinishJob(context.Background(), job.ID, status, msg); ferr != nil {
+	if ferr := q.store.FinishJobDetailed(context.Background(), job.ID, finish); ferr != nil {
 		q.logf("finish job %d: %v", job.ID, ferr)
 	} else {
-		q.jobLog(job.ID, "queue", "finished with status "+string(status))
+		q.jobLog(job.ID, "queue", "finished with status "+string(finish.Status))
+		if finish.Status == model.JobPending {
+			q.Notify()
+		}
 	}
+}
+
+type classifiedError struct {
+	errorType model.ErrorType
+	retryable bool
+}
+
+func classifyError(err error) classifiedError {
+	if err == nil {
+		return classifiedError{}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return classifiedError{errorType: model.ErrorTypeTimeout, retryable: true}
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "timeout"), strings.Contains(msg, "deadline exceeded"):
+		return classifiedError{errorType: model.ErrorTypeTimeout, retryable: true}
+	case strings.Contains(msg, "auth"), strings.Contains(msg, "login"), strings.Contains(msg, "api key"), strings.Contains(msg, "unauthorized"), strings.Contains(msg, "401"):
+		return classifiedError{errorType: model.ErrorTypeAuth, retryable: false}
+	case strings.Contains(msg, "no reviewers configured"), strings.Contains(msg, "invalid config"), strings.Contains(msg, "not configured"):
+		return classifiedError{errorType: model.ErrorTypeConfig, retryable: false}
+	case strings.Contains(msg, "git prepare"), strings.Contains(msg, "rev-parse"), strings.Contains(msg, "git fetch"), strings.Contains(msg, "git checkout"):
+		return classifiedError{errorType: model.ErrorTypeGit, retryable: isTransient(msg)}
+	case strings.Contains(msg, "gitea:"), strings.Contains(msg, "get diff"), strings.Contains(msg, "post review"), strings.Contains(msg, "post comment"), strings.Contains(msg, "check pr status"):
+		return classifiedError{errorType: model.ErrorTypeGitea, retryable: isTransient(msg)}
+	case strings.Contains(msg, "no available channel"), strings.Contains(msg, "api error"), strings.Contains(msg, "relay"), strings.Contains(msg, "upstream"):
+		return classifiedError{errorType: model.ErrorTypeUpstream, retryable: true}
+	case strings.Contains(msg, "codex review"), strings.Contains(msg, "claude review"), strings.Contains(msg, "reviewer"):
+		return classifiedError{errorType: model.ErrorTypeReviewer, retryable: isTransient(msg)}
+	default:
+		return classifiedError{errorType: model.ErrorTypeUnknown, retryable: isTransient(msg)}
+	}
+}
+
+func isTransient(msg string) bool {
+	for _, needle := range []string{
+		"503", "502", "504", "429", "temporarily", "temporary", "timeout",
+		"deadline exceeded", "connection reset", "connection refused", "network",
+		"no available channel", "rate limit", "too many requests",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func retryDelay(attempts int) time.Duration {
+	if attempts < 1 {
+		attempts = 1
+	}
+	delay := time.Duration(1<<(attempts-1)) * 30 * time.Second
+	if delay > 5*time.Minute {
+		return 5 * time.Minute
+	}
+	return delay
 }

@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS jobs(
   id INTEGER PRIMARY KEY, delivery_id TEXT UNIQUE, repo_id INTEGER,
   pr_number INTEGER, event TEXT, action TEXT, payload BLOB,
   status TEXT, attempts INTEGER DEFAULT 0, error TEXT,
+  error_type TEXT, retryable INTEGER DEFAULT 0, next_attempt_at TEXT,
   created_at TEXT, started_at TEXT, finished_at TEXT);
 CREATE INDEX IF NOT EXISTS jobs_claim ON jobs(status, repo_id);
 CREATE INDEX IF NOT EXISTS jobs_status_id ON jobs(status, id);
@@ -28,7 +29,7 @@ CREATE INDEX IF NOT EXISTS job_logs_job ON job_logs(job_id, id);
 CREATE TABLE IF NOT EXISTS review_runs(
   id INTEGER PRIMARY KEY, pull_id INTEGER REFERENCES pulls(id) ON DELETE CASCADE,
   job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
-  agent TEXT, head_sha TEXT, status TEXT, error TEXT,
+  agent TEXT, head_sha TEXT, status TEXT, error TEXT, error_type TEXT,
   finding_count INTEGER DEFAULT 0, started_at TEXT, finished_at TEXT);
 CREATE INDEX IF NOT EXISTS review_runs_pull_agent ON review_runs(pull_id, agent, id);
 CREATE TABLE IF NOT EXISTS findings(

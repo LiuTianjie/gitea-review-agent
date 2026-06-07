@@ -170,6 +170,8 @@ func (s *fakeStore) EnqueueJob(context.Context, *model.WebhookEvent) (*model.Job
 func (s *fakeStore) SupersedePending(context.Context, model.PRRef) error             { return nil }
 func (s *fakeStore) ClaimJob(context.Context) (*model.Job, error)                    { return nil, nil }
 func (s *fakeStore) FinishJob(context.Context, int64, model.JobStatus, string) error { return nil }
+func (s *fakeStore) FinishJobDetailed(context.Context, int64, model.JobFinish) error { return nil }
+func (s *fakeStore) RerunJob(context.Context, int64) (*model.Job, error)             { return nil, nil }
 func (s *fakeStore) RecoverRunning(context.Context) error                            { return nil }
 func (s *fakeStore) AppendJobLog(context.Context, int64, string, string) error       { return nil }
 func (s *fakeStore) ListJobs(context.Context, int, int) ([]model.JobView, error)     { return nil, nil }
@@ -733,6 +735,71 @@ func TestReview_CommentTrigger_ResumesAndAnswers(t *testing.T) {
 	}
 	if len(gt.posted) != 1 || gt.posted[0] != "Yes, that fixes it." {
 		t.Errorf("answer not posted: %v", gt.posted)
+	}
+}
+
+func TestReview_CommentTrigger_TargetsNamedReviewer(t *testing.T) {
+	st := newFakeStore()
+	pr := model.PRRef{Owner: "alice", Repo: "repo", Number: 7}
+	st.pulls["alice__repo"] = &model.PullState{ID: 1, PR: pr, SessionID: "codex-thread", HeadSHA: "h1", BaseRef: "main"}
+	st.reviewerStates[rpk(pr, "claude")] = &model.PullReviewerState{
+		PullID: 1, PR: pr, Agent: "claude", SessionID: "claude-thread", HeadSHA: "h1", BaseRef: "main",
+	}
+	codexReviewer := &fakeCodex{name: "codex", askReply: "codex answer"}
+	claudeReviewer := &fakeCodex{name: "claude", askReply: "claude answer"}
+	gt := &fakeGitea{}
+	o := &Orchestrator{
+		Store: st, Cache: &fakeCache{}, Reviewers: []model.Reviewer{codexReviewer, claudeReviewer}, Gitea: gt,
+		TriggerKeywords: []string{"/review"},
+	}
+
+	ev := model.WebhookEvent{
+		Event: model.EventIssueComment, Action: "created", IsPR: true,
+		PR: pr, CommentBody: "/review claude is this fixed?", HeadRef: "feat",
+	}
+	b, _ := json.Marshal(ev)
+	if err := o.Process(context.Background(), &model.Job{Payload: b, PR: pr, Event: ev.Event, Action: "created"}); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if codexReviewer.lastAsk != "" {
+		t.Fatalf("codex should not answer targeted claude review: %q", codexReviewer.lastAsk)
+	}
+	if claudeReviewer.lastAsk != "is this fixed?" {
+		t.Fatalf("claude question = %q", claudeReviewer.lastAsk)
+	}
+	if len(gt.posted) != 1 || gt.posted[0] != "claude answer" {
+		t.Fatalf("posted answer = %v", gt.posted)
+	}
+}
+
+func TestReview_CommentTrigger_AllReviewers(t *testing.T) {
+	st := newFakeStore()
+	pr := model.PRRef{Owner: "alice", Repo: "repo", Number: 7}
+	st.pulls["alice__repo"] = &model.PullState{ID: 1, PR: pr, SessionID: "codex-thread", HeadSHA: "h1", BaseRef: "main"}
+	st.reviewerStates[rpk(pr, "claude")] = &model.PullReviewerState{
+		PullID: 1, PR: pr, Agent: "claude", SessionID: "claude-thread", HeadSHA: "h1", BaseRef: "main",
+	}
+	codexReviewer := &fakeCodex{name: "codex", askReply: "codex answer"}
+	claudeReviewer := &fakeCodex{name: "claude", askReply: "claude answer"}
+	gt := &fakeGitea{}
+	o := &Orchestrator{
+		Store: st, Cache: &fakeCache{}, Reviewers: []model.Reviewer{codexReviewer, claudeReviewer}, Gitea: gt,
+		TriggerKeywords: []string{"/review"},
+	}
+
+	ev := model.WebhookEvent{
+		Event: model.EventIssueComment, Action: "created", IsPR: true,
+		PR: pr, CommentBody: "/review all compare current state", HeadRef: "feat",
+	}
+	b, _ := json.Marshal(ev)
+	if err := o.Process(context.Background(), &model.Job{Payload: b, PR: pr, Event: ev.Event, Action: "created"}); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if codexReviewer.lastAsk != "compare current state" || claudeReviewer.lastAsk != "compare current state" {
+		t.Fatalf("questions codex=%q claude=%q", codexReviewer.lastAsk, claudeReviewer.lastAsk)
+	}
+	if len(gt.posted) != 1 || !strings.Contains(gt.posted[0], "## Codex") || !strings.Contains(gt.posted[0], "## Claude") {
+		t.Fatalf("combined all-reviewer answer missing sections: %v", gt.posted)
 	}
 }
 
