@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -200,6 +202,53 @@ func TestClaimJobSkipsPendingSamePRWhenRunning(t *testing.T) {
 	}
 	if next != nil {
 		t.Fatalf("claimed same PR while first still running: %+v", next)
+	}
+}
+
+func TestClaimJobConcurrentSamePRClaimsOnce(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	for i := 0; i < 16; i++ {
+		if _, _, err := st.EnqueueJob(ctx, sampleEvent(fmt.Sprintf("d-concurrent-%d", i))); err != nil {
+			t.Fatalf("enqueue %d: %v", i, err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	results := make(chan *model.Job, 16)
+	errs := make(chan error, 16)
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			job, err := st.ClaimJob(ctx)
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- job
+		}()
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+
+	for err := range errs {
+		t.Fatalf("ClaimJob concurrent: %v", err)
+	}
+	claimed := map[int64]bool{}
+	for job := range results {
+		if job == nil {
+			continue
+		}
+		claimed[job.ID] = true
+		if job.Status != model.JobRunning {
+			t.Fatalf("claimed status=%q, want running", job.Status)
+		}
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("concurrent same-PR claims = %v, want exactly one claimed job", claimed)
 	}
 }
 
@@ -433,6 +482,195 @@ func TestListJobsFilteredDateRangeBoundaries(t *testing.T) {
 	}
 	if stats.TotalJobs != 2 {
 		t.Fatalf("JobStatsFiltered total = %d, want 2", stats.TotalJobs)
+	}
+}
+
+func TestListJobsLargeHistorySummarizesCurrentPage(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	insertJobsForReadTests(t, st, 1200)
+
+	views, err := st.ListJobs(ctx, 20, 0)
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	if len(views) != 20 {
+		t.Fatalf("ListJobs got %d rows, want one page of 20", len(views))
+	}
+	if views[0].LogCount != 3 {
+		t.Fatalf("latest job log_count = %d, want 3", views[0].LogCount)
+	}
+	for _, v := range views {
+		if len(v.Logs) != 0 {
+			t.Fatalf("list row %d included log bodies: %+v", v.ID, v.Logs)
+		}
+	}
+
+	stats, err := st.JobStats(ctx)
+	if err != nil {
+		t.Fatalf("JobStats: %v", err)
+	}
+	if stats.TotalJobs != 1200 || stats.ReviewJobs != 1200 {
+		t.Fatalf("JobStats totals = %+v, want 1200 review jobs", stats)
+	}
+}
+
+func TestConsoleJobReadsDuringConcurrentLogWrites(t *testing.T) {
+	st := newTestStore(t)
+	insertJobsForReadTests(t, st, 200)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				if err := st.AppendJobLog(ctx, int64(1+worker), "worker", fmt.Sprintf("log %d", j)); err != nil {
+					t.Errorf("AppendJobLog: %v", err)
+					return
+				}
+			}
+		}(i)
+	}
+
+	for i := 0; i < 25; i++ {
+		if _, err := st.ListJobs(ctx, 20, 0); err != nil {
+			t.Fatalf("ListJobs while writing: %v", err)
+		}
+		if _, err := st.JobStats(ctx); err != nil {
+			t.Fatalf("JobStats while writing: %v", err)
+		}
+	}
+	wg.Wait()
+}
+
+func insertJobsForReadTests(t *testing.T, st *Store, count int) {
+	t.Helper()
+	ctx := context.Background()
+	repoID, err := ensureRepo(ctx, st.db, "acme", "widgets")
+	if err != nil {
+		t.Fatalf("ensure repo: %v", err)
+	}
+	tx, err := st.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin seed tx: %v", err)
+	}
+	defer tx.Rollback()
+
+	base := time.Date(2026, 6, 7, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < count; i++ {
+		status := model.JobPending
+		if i%3 == 0 {
+			status = model.JobDone
+		} else if i%5 == 0 {
+			status = model.JobFailed
+		}
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO jobs(delivery_id,repo_id,pr_number,event,action,payload,status,attempts,created_at)
+			 VALUES(?,?,?,?,?,?,?,0,?)`,
+			fmt.Sprintf("seed-%d", i), repoID, i+1, string(model.EventPullRequest), "opened",
+			[]byte(`{}`), string(status), base.Add(time.Duration(i)*time.Second).Format(time.RFC3339))
+		if err != nil {
+			t.Fatalf("insert job %d: %v", i, err)
+		}
+		if i >= count-20 {
+			jobID, err := res.LastInsertId()
+			if err != nil {
+				t.Fatalf("job id %d: %v", i, err)
+			}
+			for n := 0; n < 3; n++ {
+				if _, err := tx.ExecContext(ctx,
+					`INSERT INTO job_logs(job_id,stage,message,created_at) VALUES(?,?,?,?)`,
+					jobID, "seed", fmt.Sprintf("log %d", n), base.Add(time.Duration(i)*time.Second).Format(time.RFC3339)); err != nil {
+					t.Fatalf("insert log %d/%d: %v", i, n, err)
+				}
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit seed tx: %v", err)
+	}
+}
+
+func BenchmarkConsoleJobReadsLargeHistory(b *testing.B) {
+	st := newBenchmarkStore(b)
+	insertJobsForBenchmark(b, st, 5000)
+	ctx := context.Background()
+
+	b.Run("list_page", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, err := st.ListJobs(ctx, 20, 0); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("stats", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, err := st.JobStats(ctx); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func newBenchmarkStore(b *testing.B) *Store {
+	b.Helper()
+	st, err := Open(filepath.Join(b.TempDir(), "bench.db"))
+	if err != nil {
+		b.Fatalf("Open: %v", err)
+	}
+	b.Cleanup(func() { st.Close() })
+	return st
+}
+
+func insertJobsForBenchmark(b *testing.B, st *Store, count int) {
+	b.Helper()
+	ctx := context.Background()
+	repoID, err := ensureRepo(ctx, st.db, "acme", "widgets")
+	if err != nil {
+		b.Fatalf("ensure repo: %v", err)
+	}
+	tx, err := st.db.BeginTx(ctx, nil)
+	if err != nil {
+		b.Fatalf("begin seed tx: %v", err)
+	}
+	defer tx.Rollback()
+
+	base := time.Date(2026, 6, 7, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < count; i++ {
+		status := model.JobPending
+		if i%3 == 0 {
+			status = model.JobDone
+		} else if i%5 == 0 {
+			status = model.JobFailed
+		}
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO jobs(delivery_id,repo_id,pr_number,event,action,payload,status,attempts,created_at)
+			 VALUES(?,?,?,?,?,?,?,0,?)`,
+			fmt.Sprintf("bench-%d", i), repoID, i+1, string(model.EventPullRequest), "opened",
+			[]byte(`{}`), string(status), base.Add(time.Duration(i)*time.Second).Format(time.RFC3339))
+		if err != nil {
+			b.Fatalf("insert job %d: %v", i, err)
+		}
+		if i >= count-20 {
+			jobID, err := res.LastInsertId()
+			if err != nil {
+				b.Fatalf("job id %d: %v", i, err)
+			}
+			for n := 0; n < 3; n++ {
+				if _, err := tx.ExecContext(ctx,
+					`INSERT INTO job_logs(job_id,stage,message,created_at) VALUES(?,?,?,?)`,
+					jobID, "seed", fmt.Sprintf("log %d", n), base.Add(time.Duration(i)*time.Second).Format(time.RFC3339)); err != nil {
+					b.Fatalf("insert log %d/%d: %v", i, n, err)
+				}
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		b.Fatalf("commit seed tx: %v", err)
 	}
 }
 

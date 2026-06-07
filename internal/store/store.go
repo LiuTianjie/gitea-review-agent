@@ -8,6 +8,8 @@ import (
 	"database/sql"
 	_ "embed"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -28,13 +30,15 @@ var _ model.Store = (*Store)(nil)
 // Open opens (creating if needed) the SQLite database at dbPath, enables WAL,
 // and applies the embedded schema.
 func Open(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := sql.Open("sqlite", sqliteDSN(dbPath))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-	// Serialize access: WAL allows concurrent readers but a single writer;
-	// pinning one connection avoids "database is locked" under concurrent workers.
-	db.SetMaxOpenConns(1)
+	// WAL allows readers to proceed while one writer is active. Keep the pool
+	// bounded so console reads do not queue behind every worker write, while
+	// still avoiding unbounded SQLite connections under bursty webhooks.
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(8)
 
 	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
 		db.Close()
@@ -57,6 +61,19 @@ func Open(dbPath string) (*Store, error) {
 		return nil, err
 	}
 	return &Store{db: db}, nil
+}
+
+func sqliteDSN(dbPath string) string {
+	q := url.Values{}
+	q.Add("_pragma", "busy_timeout(5000)")
+	q.Add("_pragma", "foreign_keys(ON)")
+	q.Add("_pragma", "journal_mode(WAL)")
+
+	sep := "?"
+	if strings.Contains(dbPath, "?") {
+		sep = "&"
+	}
+	return dbPath + sep + q.Encode()
 }
 
 // Close releases the underlying database handle.

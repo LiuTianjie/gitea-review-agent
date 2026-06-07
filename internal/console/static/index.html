@@ -762,6 +762,8 @@
   var jobDetailCache = {};
   var jobDetailRequestToken = 0;
   var analysisLoaded = false;
+  var settingsLoaded = false;
+  var effectiveConfigLoaded = false;
 
   function $(id){ return document.getElementById(id); }
   function show(el, text, ok){ el.textContent = text; el.className = "msg " + (ok ? "ok" : "err"); }
@@ -790,6 +792,7 @@
     });
     if (name === "jobs") loadJobs();
     if (name === "analytics" && !analysisLoaded) loadAnalysisLatest();
+    if (name === "config") loadConfigPanel();
   }
 
   function loadSettings(){
@@ -800,8 +803,14 @@
         if (v === "" && DEFAULTS[k]) v = DEFAULTS[k];
         el.value = v;
       });
+      settingsLoaded = true;
       show($("settingsMsg"), "已加载", true);
     }).catch(function(e){ show($("settingsMsg"), "加载失败：" + e, false); });
+  }
+
+  function loadConfigPanel(){
+    if (!settingsLoaded) loadSettings();
+    if (!effectiveConfigLoaded) loadEffectiveConfig();
   }
 
   function saveSettings(keys, label){
@@ -882,6 +891,7 @@
         "<p><strong>Claude：</strong><code>" + esc(c.claude_enabled ? "enabled" : "disabled") + "</code>　<strong>模型：</strong><code>" + esc(c.claude_model || "") + "</code>　<strong>API Key：</strong>" + (c.claude_api_key_set ? "已加载" : "未加载") + "　<strong>Base URL：</strong><code>" + esc(c.claude_base_url || "默认") + "</code>　<strong>预算：</strong><code>$" + esc(c.claude_max_budget_usd) + "</code>　<strong>cc-switch provider：</strong><code>" + esc(c.cc_switch_provider_id || "未使用") + "</code></p>" +
         "<p><strong>配置来源：</strong><code>" + esc(c.config_source || "db-over-env") + "</code></p>" +
         "<p class='muted'>" + esc(c.runtime_reload_note || "") + "</p>";
+      effectiveConfigLoaded = true;
       show($("effectiveMsg"), "已读取当前进程配置", true);
     }).catch(function(e){ show($("effectiveMsg"), "读取失败：" + e, false); });
   }
@@ -897,6 +907,22 @@
     return "/admin/api/jobs/stats";
   }
 
+  function fetchJSON(url, options, timeoutMs){
+    timeoutMs = timeoutMs || 8000;
+    if (!window.AbortController) {
+      return fetch(url, options).then(function(r){ return r.json(); });
+    }
+    var controller = new AbortController();
+    var opts = Object.assign({}, options || {}, {signal: controller.signal});
+    var timer = setTimeout(function(){ controller.abort(); }, timeoutMs);
+    return fetch(url, opts).then(function(r){ return r.json(); })
+      .finally(function(){ clearTimeout(timer); });
+  }
+
+  function requestErrorText(e){
+    return e && e.name === "AbortError" ? "请求超时" : String(e);
+  }
+
   function loadJobs(){
     if (jobsLoading) {
       jobsReloadQueued = true;
@@ -905,7 +931,7 @@
     jobsLoading = true;
     jobsReloadQueued = false;
     var url = jobsURL();
-    return fetch(url).then(function(r){ return r.json(); }).then(function(payload){
+    return fetchJSON(url, null, 8000).then(function(payload){
       if (payload && payload.ok === false) throw new Error(payload.error || "加载失败");
       if (Array.isArray(payload)) {
         payload = {jobs: payload, page: 1, page_size: payload.length || jobsPageSize, total: payload.length || 0, total_pages: 1, stats: null};
@@ -916,11 +942,15 @@
       jobsHasMore = !!payload.has_more;
       renderJobs();
       renderPager();
-      if (selectedJobID && findJob(selectedJobID)) selectJob(selectedJobID, true);
-      else if (jobCache.length) { selectedJobID = jobCache[0].id; renderJobs(); selectJob(selectedJobID, false); }
-      else renderEmptyJobDetail();
+      if (selectedJobID && findJob(selectedJobID)) {
+        var cached = jobDetailCache[selectedJobID];
+        if (cached) renderJobDetail(cached);
+      } else {
+        selectedJobID = null;
+        renderEmptyJobDetail();
+      }
       $("jobsMeta").textContent = "更新于 " + new Date().toLocaleTimeString() + " · 当前页 " + jobCache.length + " 条";
-    }).catch(function(e){ $("jobsBody").innerHTML = '<tr><td colspan="10" class="err">加载失败：' + esc(e) + '</td></tr>'; })
+    }).catch(function(e){ $("jobsBody").innerHTML = '<tr><td colspan="10" class="err">加载失败：' + esc(requestErrorText(e)) + '</td></tr>'; })
       .finally(function(){
         jobsLoading = false;
         if (jobsReloadQueued) return loadJobs();
@@ -930,7 +960,7 @@
   function loadJobStats(){
     if (jobsStatsLoading) return Promise.resolve();
     jobsStatsLoading = true;
-    return fetch(jobStatsURL()).then(function(r){ return r.json(); }).then(function(payload){
+    return fetchJSON(jobStatsURL(), null, 12000).then(function(payload){
       if (payload && payload.ok === false) throw new Error(payload.error || "加载失败");
       jobsStats = payload || null;
       jobsTotal = jobsStats ? (jobsStats.total_jobs || 0) : 0;
@@ -951,7 +981,7 @@
     if (!id) return;
     var token = ++jobDetailRequestToken;
     if (summary) renderJobDetail(Object.assign({}, summary, {logs_loading:true}));
-    fetch("/admin/api/jobs/" + encodeURIComponent(id)).then(function(r){ return r.json(); }).then(function(payload){
+    fetchJSON("/admin/api/jobs/" + encodeURIComponent(id), null, 8000).then(function(payload){
       if (payload && payload.ok === false) throw new Error(payload.error || "加载失败");
       if (token !== jobDetailRequestToken || String(selectedJobID) !== String(id)) return;
       jobDetailCache[id] = payload;
@@ -963,7 +993,7 @@
     }).catch(function(e){
       if (token !== jobDetailRequestToken || String(selectedJobID) !== String(id)) return;
       var fallback = summary || findJob(id) || {id:id};
-      renderJobDetail(Object.assign({}, fallback, {logs_error:String(e)}));
+      renderJobDetail(Object.assign({}, fallback, {logs_error:requestErrorText(e)}));
     });
   }
 
@@ -1181,9 +1211,7 @@
   $("nextJobsBtn").addEventListener("click", function(){ goJobsPage(1); });
   $("jobsPageSize").addEventListener("change", changeJobsPageSize);
 
-  loadSettings();
-  loadEffectiveConfig();
-  refreshJobsAndStats();
+  loadJobs().then(function(){ setTimeout(loadJobStats, 500); });
   setInterval(loadJobs, 10000);
   setInterval(loadJobStats, 60000);
 })();

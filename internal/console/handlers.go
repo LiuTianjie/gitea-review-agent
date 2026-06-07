@@ -353,6 +353,9 @@ type jobStatsView struct {
 }
 
 func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
 	page := parsePositiveInt(r.URL.Query().Get("page"), 1)
 	pageSize := parsePositiveInt(r.URL.Query().Get("page_size"), 20)
 	if pageSize > 100 {
@@ -365,7 +368,7 @@ func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jobs, err := c.store.ListJobsFiltered(r.Context(), filter, pageSize+1, offset)
+	jobs, err := c.store.ListJobsFiltered(ctx, filter, pageSize+1, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -387,12 +390,15 @@ func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Console) handleJobStats(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
 	filter, err := parseJobFilter(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	stats, err := c.store.JobStatsFiltered(r.Context(), filter)
+	stats, err := c.store.JobStatsFiltered(ctx, filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -401,12 +407,15 @@ func (c *Console) handleJobStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Console) handleJobDetail(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
 		writeError(w, http.StatusBadRequest, "invalid job id")
 		return
 	}
-	job, err := c.store.GetJobView(r.Context(), id)
+	job, err := c.store.GetJobView(ctx, id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "job not found")

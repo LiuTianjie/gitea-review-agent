@@ -81,47 +81,38 @@ func (s *Store) SupersedePending(ctx context.Context, pr model.PRRef) error {
 }
 
 // ClaimJob atomically transitions the oldest pending job to running and returns
-// it. Returns (nil, nil) when no pending job exists. The SELECT+UPDATE run in a
-// single transaction so concurrent workers never claim the same row.
+// it. Returns (nil, nil) when no pending job exists. The UPDATE ... RETURNING
+// statement keeps concurrent workers from claiming the same row.
 func (s *Store) ClaimJob(ctx context.Context) (*model.Job, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin claim tx: %w", err)
-	}
-	defer tx.Rollback()
-
 	var id int64
-	err = tx.QueryRowContext(ctx,
-		`SELECT j.id
-		 FROM jobs j
-		 WHERE j.status=?
-		   AND NOT EXISTS (
-		     SELECT 1 FROM jobs r
-		     WHERE r.status=?
-		       AND r.repo_id=j.repo_id
-		       AND r.pr_number=j.pr_number
-		   )
-		 ORDER BY j.id LIMIT 1`,
+	err := s.db.QueryRowContext(ctx,
+		`UPDATE jobs
+		 SET status=?, attempts=attempts+1, started_at=?
+		 WHERE id = (
+		   SELECT j.id
+		   FROM jobs j
+		   WHERE j.status=?
+		     AND NOT EXISTS (
+		       SELECT 1 FROM jobs r
+		       WHERE r.status=?
+		         AND r.repo_id=j.repo_id
+		         AND r.pr_number=j.pr_number
+		     )
+		   ORDER BY j.id LIMIT 1
+		 )
+		 RETURNING id`,
+		string(model.JobRunning), nowRFC3339(),
 		string(model.JobPending), string(model.JobRunning)).Scan(&id)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("select pending job: %w", err)
+		return nil, fmt.Errorf("claim job: %w", err)
 	}
 
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE jobs SET status=?, attempts=attempts+1, started_at=? WHERE id=?`,
-		string(model.JobRunning), nowRFC3339(), id); err != nil {
-		return nil, fmt.Errorf("claim update: %w", err)
-	}
-
-	job, err := scanJob(ctx, tx, id)
+	job, err := scanJob(ctx, s.db, id)
 	if err != nil {
 		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit claim: %w", err)
 	}
 	return job, nil
 }
@@ -190,15 +181,13 @@ func (s *Store) ListJobsFiltered(ctx context.Context, filter model.JobFilter, li
 	if err != nil {
 		return nil, err
 	}
-	if err := s.attachJobLogCounts(ctx, out); err != nil {
-		return nil, err
-	}
 	return out, nil
 }
 
 const jobViewSelect = `SELECT j.id, r.owner, r.name, j.pr_number, j.event, j.action,
        j.status, j.attempts, j.error, j.created_at, j.started_at, j.finished_at,
-       COALESCE(p.session_id,'')
+       COALESCE(p.session_id,''),
+       (SELECT COUNT(*) FROM job_logs l WHERE l.job_id=j.id)
 FROM jobs j
 LEFT JOIN repos r ON r.id = j.repo_id
 LEFT JOIN pulls p ON p.repo_id = j.repo_id AND p.number = j.pr_number
@@ -222,7 +211,7 @@ func scanJobViewRows(rows *sql.Rows) ([]model.JobView, error) {
 			sessionID  string
 		)
 		if err := rows.Scan(&v.ID, &owner, &name, &v.PR.Number, &event, &v.Action,
-			&status, &v.Attempts, &errMsg, &createdAt, &startedAt, &finishedAt, &sessionID); err != nil {
+			&status, &v.Attempts, &errMsg, &createdAt, &startedAt, &finishedAt, &sessionID, &v.LogCount); err != nil {
 			return nil, fmt.Errorf("scan job view: %w", err)
 		}
 		v.PR.Owner = owner.String
@@ -240,42 +229,6 @@ func scanJobViewRows(rows *sql.Rows) ([]model.JobView, error) {
 		return nil, fmt.Errorf("iterate job views: %w", err)
 	}
 	return out, nil
-}
-
-func (s *Store) attachJobLogCounts(ctx context.Context, jobs []model.JobView) error {
-	if len(jobs) == 0 {
-		return nil
-	}
-	placeholders := make([]string, len(jobs))
-	args := make([]any, len(jobs))
-	for i := range jobs {
-		placeholders[i] = "?"
-		args[i] = jobs[i].ID
-	}
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT job_id, COUNT(*) FROM job_logs WHERE job_id IN (`+strings.Join(placeholders, ",")+`) GROUP BY job_id`,
-		args...)
-	if err != nil {
-		return fmt.Errorf("count job logs: %w", err)
-	}
-	defer rows.Close()
-
-	counts := make(map[int64]int, len(jobs))
-	for rows.Next() {
-		var jobID int64
-		var n int
-		if err := rows.Scan(&jobID, &n); err != nil {
-			return fmt.Errorf("scan job log count: %w", err)
-		}
-		counts[jobID] = n
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate job log counts: %w", err)
-	}
-	for i := range jobs {
-		jobs[i].LogCount = counts[jobs[i].ID]
-	}
-	return nil
 }
 
 // CountJobs returns the total number of queued jobs.
@@ -301,39 +254,44 @@ func (s *Store) JobStats(ctx context.Context) (model.JobStats, error) {
 // JobStatsFiltered returns aggregate job counts matching filter.
 func (s *Store) JobStatsFiltered(ctx context.Context, filter model.JobFilter) (model.JobStats, error) {
 	var stats model.JobStats
-	where, filterArgs := jobFilterWhere(filter)
-	args := []any{
-		string(model.EventPullRequest),
-		string(model.EventPullRequest), string(model.JobDone),
-		string(model.JobDone),
-		string(model.JobFailed),
-		string(model.JobRunning),
-		string(model.JobPending),
-		string(model.JobSuperseded),
-	}
-	args = append(args, filterArgs...)
-	err := s.db.QueryRowContext(ctx,
-		`SELECT
-		    COUNT(*),
-		    COALESCE(SUM(CASE WHEN event=? THEN 1 ELSE 0 END), 0),
-		    COALESCE(SUM(CASE WHEN event=? AND status=? THEN 1 ELSE 0 END), 0),
-		    COALESCE(SUM(CASE WHEN status=? THEN 1 ELSE 0 END), 0),
-		    COALESCE(SUM(CASE WHEN status=? THEN 1 ELSE 0 END), 0),
-		    COALESCE(SUM(CASE WHEN status=? THEN 1 ELSE 0 END), 0),
-		    COALESCE(SUM(CASE WHEN status=? THEN 1 ELSE 0 END), 0),
-		    COALESCE(SUM(CASE WHEN status=? THEN 1 ELSE 0 END), 0)
-		 FROM jobs j `+where, args...).Scan(
-		&stats.TotalJobs,
-		&stats.ReviewJobs,
-		&stats.ReviewedJobs,
-		&stats.Done,
-		&stats.Failed,
-		&stats.Running,
-		&stats.Pending,
-		&stats.Superseded,
-	)
+	where, args := jobFilterWhere(filter)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT j.event, j.status, COUNT(*)
+		 FROM jobs j `+where+`
+		 GROUP BY j.event, j.status`, args...)
 	if err != nil {
 		return model.JobStats{}, fmt.Errorf("job stats: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var event, status string
+		var n int
+		if err := rows.Scan(&event, &status, &n); err != nil {
+			return model.JobStats{}, fmt.Errorf("scan job stats: %w", err)
+		}
+		stats.TotalJobs += n
+		if event == string(model.EventPullRequest) {
+			stats.ReviewJobs += n
+			if status == string(model.JobDone) {
+				stats.ReviewedJobs += n
+			}
+		}
+		switch status {
+		case string(model.JobDone):
+			stats.Done += n
+		case string(model.JobFailed):
+			stats.Failed += n
+		case string(model.JobRunning):
+			stats.Running += n
+		case string(model.JobPending):
+			stats.Pending += n
+		case string(model.JobSuperseded):
+			stats.Superseded += n
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return model.JobStats{}, fmt.Errorf("iterate job stats: %w", err)
 	}
 	return stats, nil
 }
