@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -483,6 +484,39 @@ func TestListJobs(t *testing.T) {
 	}
 	if filteredStats.TotalJobs != 1 || filteredStats.Done != 1 || filteredStats.Failed != 0 {
 		t.Fatalf("JobStatsFiltered = %+v, want total/done/failed = 1/1/0", filteredStats)
+	}
+}
+
+func TestListJobsTruncatesLargeErrorsButDetailKeepsFullError(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	job, _, err := st.EnqueueJob(ctx, sampleEvent("d-large-error"))
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	largeErr := strings.Repeat("x", 5000)
+	if err := st.FinishJobDetailed(ctx, job.ID, model.JobFinish{
+		Status: model.JobFailed, Error: largeErr, ErrorType: model.ErrorTypeReviewer,
+	}); err != nil {
+		t.Fatalf("finish job: %v", err)
+	}
+	list, err := st.ListJobs(ctx, 20, 0)
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("ListJobs got %d rows, want 1", len(list))
+	}
+	if len(list[0].Error) >= len(largeErr) || !strings.Contains(list[0].Error, "truncated") {
+		t.Fatalf("list error was not truncated: len=%d", len(list[0].Error))
+	}
+	detail, err := st.GetJobView(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetJobView: %v", err)
+	}
+	if detail.Error != largeErr {
+		t.Fatalf("detail error len=%d, want full len=%d", len(detail.Error), len(largeErr))
 	}
 }
 

@@ -254,7 +254,12 @@ func jobViewSelect(where string) string {
   ORDER BY j.created_at DESC, j.id DESC LIMIT ? OFFSET ?
 )
 SELECT page.id, r.owner, r.name, page.pr_number, page.event, page.action,
-       page.status, page.attempts, page.error, COALESCE(page.error_type,''), COALESCE(page.retryable,0),
+       page.status, page.attempts,
+       CASE
+         WHEN length(COALESCE(page.error,'')) > 300 THEN substr(page.error, 1, 300) || '\n...(truncated; open task detail for full error)'
+         ELSE page.error
+       END,
+       COALESCE(page.error_type,''), COALESCE(page.retryable,0),
        page.created_at, page.started_at, page.finished_at, page.next_attempt_at,
        COALESCE(p.session_id,''),
        (SELECT COUNT(*) FROM job_logs l WHERE l.job_id=page.id)
