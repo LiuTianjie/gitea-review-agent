@@ -23,6 +23,7 @@ func TestLoadEnvDefaults(t *testing.T) {
 		"REPO_ALLOWLIST", "TIMEOUT", "SECRET_KEY", "CODEX_SANDBOX_MODE",
 		"CLAUDE_ENABLED", "CLAUDE_MODEL", "CLAUDE_API_KEY", "CLAUDE_BASE_URL",
 		"CLAUDE_HOME", "CC_SWITCH_CONFIG_DIR", "CC_SWITCH_PROVIDER_ID", "CLAUDE_MAX_BUDGET_USD",
+		"MINIMAX_ENABLED", "MINIMAX_MODEL", "MINIMAX_PROVIDER_ID", "MINIMAX_API_KEY", "MINIMAX_BASE_URL", "MINIMAX_MAX_BUDGET_USD",
 	} {
 		t.Setenv(k, "")
 	}
@@ -59,6 +60,9 @@ func TestLoadEnvDefaults(t *testing.T) {
 	if c.ClaudeMaxBudgetUSD != DefaultClaudeBudget {
 		t.Errorf("ClaudeMaxBudgetUSD = %g, want %g", c.ClaudeMaxBudgetUSD, DefaultClaudeBudget)
 	}
+	if c.MiniMaxMaxBudgetUSD != DefaultMiniMaxBudget {
+		t.Errorf("MiniMaxMaxBudgetUSD = %g, want %g", c.MiniMaxMaxBudgetUSD, DefaultMiniMaxBudget)
+	}
 	if c.Concurrency != DefaultConcurrency {
 		t.Errorf("Concurrency = %d, want %d", c.Concurrency, DefaultConcurrency)
 	}
@@ -80,32 +84,38 @@ func TestLoadEnvDefaults(t *testing.T) {
 
 func TestLoadEnvValues(t *testing.T) {
 	setEnv(t, map[string]string{
-		"LISTEN_ADDR":           ":9090",
-		"DB_PATH":               "/tmp/db.sqlite",
-		"CACHE_DIR":             "/tmp/cache",
-		"WORK_DIR":              "/tmp/work",
-		"CODEX_HOME":            "/tmp/codex",
-		"GITEA_URL":             "https://git.example.com",
-		"GITEA_TOKEN":           "tok-123",
-		"WEBHOOK_SECRET":        "whsec",
-		"MODEL":                 "gpt-5",
-		"CODEX_AUTH_MODE":       "apikey",
-		"CODEX_API_KEY":         "sk-abc",
-		"CODEX_SANDBOX_MODE":    "danger-full-access",
-		"CLAUDE_ENABLED":        "true",
-		"CLAUDE_MODEL":          "claude-opus-4-6-thinking",
-		"CLAUDE_API_KEY":        "ak-claude",
-		"CLAUDE_BASE_URL":       "https://llm.example.com",
-		"CLAUDE_HOME":           "/tmp/claude",
-		"CC_SWITCH_CONFIG_DIR":  "/tmp/cc-switch",
-		"CC_SWITCH_PROVIDER_ID": "relay",
-		"CLAUDE_MAX_BUDGET_USD": "0.42",
-		"ADMIN_PASSWORD":        "hunter2",
-		"TRIGGER_KEYWORDS":      "/review, @bot , please-review",
-		"CONCURRENCY":           "5",
-		"REPO_ALLOWLIST":        "acme/widgets, acme/gadgets",
-		"TIMEOUT":               "30s",
-		"SECRET_KEY":            "key",
+		"LISTEN_ADDR":            ":9090",
+		"DB_PATH":                "/tmp/db.sqlite",
+		"CACHE_DIR":              "/tmp/cache",
+		"WORK_DIR":               "/tmp/work",
+		"CODEX_HOME":             "/tmp/codex",
+		"GITEA_URL":              "https://git.example.com",
+		"GITEA_TOKEN":            "tok-123",
+		"WEBHOOK_SECRET":         "whsec",
+		"MODEL":                  "gpt-5",
+		"CODEX_AUTH_MODE":        "apikey",
+		"CODEX_API_KEY":          "sk-abc",
+		"CODEX_SANDBOX_MODE":     "danger-full-access",
+		"CLAUDE_ENABLED":         "true",
+		"CLAUDE_MODEL":           "claude-opus-4-6-thinking",
+		"CLAUDE_API_KEY":         "ak-claude",
+		"CLAUDE_BASE_URL":        "https://llm.example.com",
+		"CLAUDE_HOME":            "/tmp/claude",
+		"CC_SWITCH_CONFIG_DIR":   "/tmp/cc-switch",
+		"CC_SWITCH_PROVIDER_ID":  "relay",
+		"CLAUDE_MAX_BUDGET_USD":  "0.42",
+		"MINIMAX_ENABLED":        "true",
+		"MINIMAX_MODEL":          "minimax-m3",
+		"MINIMAX_PROVIDER_ID":    "minimaxreview",
+		"MINIMAX_API_KEY":        "ak-minimax",
+		"MINIMAX_BASE_URL":       "https://minimax-relay.example.com",
+		"MINIMAX_MAX_BUDGET_USD": "0.25",
+		"ADMIN_PASSWORD":         "hunter2",
+		"TRIGGER_KEYWORDS":       "/review, @bot , please-review",
+		"CONCURRENCY":            "5",
+		"REPO_ALLOWLIST":         "acme/widgets, acme/gadgets",
+		"TIMEOUT":                "30s",
+		"SECRET_KEY":             "key",
 	})
 
 	c := LoadEnv()
@@ -142,6 +152,9 @@ func TestLoadEnvValues(t *testing.T) {
 	}
 	if c.ClaudeMaxBudgetUSD != 0.42 {
 		t.Errorf("ClaudeMaxBudgetUSD = %g, want 0.42", c.ClaudeMaxBudgetUSD)
+	}
+	if !c.MiniMaxEnabled || c.MiniMaxModel != "minimax-m3" || c.MiniMaxProvider != "minimaxreview" || c.MiniMaxAPIKey != "ak-minimax" || c.MiniMaxBaseURL != "https://minimax-relay.example.com" || c.MiniMaxMaxBudgetUSD != 0.25 {
+		t.Errorf("MiniMax config not loaded: %+v", c)
 	}
 	if c.AdminPassword != "hunter2" {
 		t.Errorf("AdminPassword = %q", c.AdminPassword)
@@ -187,21 +200,27 @@ func TestApplyOverrides(t *testing.T) {
 	}
 
 	c.ApplyOverrides(map[string]string{
-		"gitea_url":             "https://db.example.com",
-		"gitea_token":           "db-tok",
-		"model":                 "db-model",
-		"codex_auth_mode":       "apikey",
-		"codex_api_key":         "sk-db",
-		"codex_sandbox_mode":    "workspace-write",
-		"claude_model":          "",
-		"claude_home":           "",
-		"cc_switch_config_dir":  "",
-		"claude_max_budget_usd": "0.5",
-		"webhook_secret":        "db-secret",
-		"trigger_keywords":      "/lgtm,@review",
-		"concurrency":           "8",
-		"repo_allowlist":        "a/b",
-		"timeout":               "5m",
+		"gitea_url":              "https://db.example.com",
+		"gitea_token":            "db-tok",
+		"model":                  "db-model",
+		"codex_auth_mode":        "apikey",
+		"codex_api_key":          "sk-db",
+		"codex_sandbox_mode":     "workspace-write",
+		"claude_model":           "",
+		"claude_home":            "",
+		"cc_switch_config_dir":   "",
+		"claude_max_budget_usd":  "0.5",
+		"minimax_enabled":        "true",
+		"minimax_model":          "",
+		"minimax_provider_id":    "",
+		"minimax_api_key":        "ak-db-minimax",
+		"minimax_base_url":       "https://db-minimax.example.com",
+		"minimax_max_budget_usd": "0.2",
+		"webhook_secret":         "db-secret",
+		"trigger_keywords":       "/lgtm,@review",
+		"concurrency":            "8",
+		"repo_allowlist":         "a/b",
+		"timeout":                "5m",
 	})
 
 	if c.GiteaURL != "https://db.example.com" {
@@ -233,6 +252,24 @@ func TestApplyOverrides(t *testing.T) {
 	}
 	if c.ClaudeMaxBudgetUSD != 0.5 {
 		t.Errorf("ClaudeMaxBudgetUSD not overridden: %g", c.ClaudeMaxBudgetUSD)
+	}
+	if !c.MiniMaxEnabled {
+		t.Errorf("MiniMaxEnabled not overridden")
+	}
+	if c.MiniMaxModel != "" {
+		t.Errorf("MiniMaxModel blank override = %q, want blank", c.MiniMaxModel)
+	}
+	if c.MiniMaxProvider != "" {
+		t.Errorf("MiniMaxProvider blank override = %q, want blank", c.MiniMaxProvider)
+	}
+	if c.MiniMaxAPIKey != "ak-db-minimax" {
+		t.Errorf("MiniMaxAPIKey not overridden: %q", c.MiniMaxAPIKey)
+	}
+	if c.MiniMaxBaseURL != "https://db-minimax.example.com" {
+		t.Errorf("MiniMaxBaseURL not overridden: %q", c.MiniMaxBaseURL)
+	}
+	if c.MiniMaxMaxBudgetUSD != 0.2 {
+		t.Errorf("MiniMaxMaxBudgetUSD not overridden: %g", c.MiniMaxMaxBudgetUSD)
 	}
 	if c.WebhookSecret != "db-secret" {
 		t.Errorf("WebhookSecret not overridden: %q", c.WebhookSecret)
@@ -339,6 +376,10 @@ func TestValidateBadConcurrencyAndTimeout(t *testing.T) {
 	c = &Config{CodexAuthMode: AuthModeAuthFile, Concurrency: 1, Timeout: time.Minute, ClaudeMaxBudgetUSD: -0.1}
 	if err := c.Validate(); err == nil {
 		t.Error("Validate(claude budget < 0) = nil, want error")
+	}
+	c = &Config{CodexAuthMode: AuthModeAuthFile, Concurrency: 1, Timeout: time.Minute, MiniMaxMaxBudgetUSD: -0.1}
+	if err := c.Validate(); err == nil {
+		t.Error("Validate(minimax budget < 0) = nil, want error")
 	}
 }
 

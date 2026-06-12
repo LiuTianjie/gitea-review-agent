@@ -1054,6 +1054,8 @@ func reviewerDisplayName(agent string) string {
 		return "Codex"
 	case "claude":
 		return "Claude"
+	case "minimax":
+		return "MiniMax"
 	default:
 		name := normalizeAgentName(agent)
 		if name == "" {

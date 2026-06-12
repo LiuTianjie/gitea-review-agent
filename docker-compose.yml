@@ -22,6 +22,12 @@ services:
       CLAUDE_HOME: /claude-home
       CC_SWITCH_CONFIG_DIR: /cc-switch
       CC_SWITCH_PROVIDER_ID: ${CC_SWITCH_PROVIDER_ID:-}
+      MINIMAX_ENABLED: ${MINIMAX_ENABLED:-false}
+      MINIMAX_PROVIDER_ID: ${MINIMAX_PROVIDER_ID:-}
+      MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      MINIMAX_BASE_URL: ${MINIMAX_BASE_URL:-}
+      MINIMAX_MODEL: ${MINIMAX_MODEL:-}
+      MINIMAX_MAX_BUDGET_USD: ${MINIMAX_MAX_BUDGET_USD:-0.3}
       # apikey mode only (separately billed OpenAI Platform key):
       # CODEX_API_KEY: ${CODEX_API_KEY:-}
     volumes:

@@ -471,6 +471,7 @@
       <span class="chip">webhook</span>
       <span class="chip">codex</span>
       <span class="chip">claude</span>
+      <span class="chip">minimax</span>
       <span class="chip">jobs</span>
     </div>
   </div>
@@ -710,6 +711,51 @@
   </section>
 
   <section>
+    <div class="section-bar">
+      <div class="section-title"><h2>MiniMax Reviewer</h2></div>
+      <div class="section-actions">
+        <button id="saveMiniMaxBtn" type="button">保存 MiniMax</button>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="minimax_enabled">MiniMax Reviewer</label>
+        <select id="minimax_enabled">
+          <option value="false">disabled</option>
+          <option value="true">enabled</option>
+        </select>
+      </div>
+      <div>
+        <label for="minimax_provider_id">cc-switch Provider ID</label>
+        <input id="minimax_provider_id" placeholder="minimaxreview">
+        <p class="field-help">可选。填了会先切 cc-switch provider；留空则直接使用下面的 API Key / Base URL。</p>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="minimax_api_key">MiniMax API Key</label>
+        <input id="minimax_api_key" type="password" placeholder="留空则保持不变">
+      </div>
+      <div>
+        <label for="minimax_base_url">MiniMax Base URL</label>
+        <input id="minimax_base_url" placeholder="https://relay.example.com">
+        <p class="field-help">中转站地址填这里；会作为 Claude Code 的 Anthropic-compatible Base URL 使用。</p>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="minimax_model">模型参数（可选）</label>
+        <input id="minimax_model" placeholder="留空则使用 provider 或中转站默认模型">
+      </div>
+      <div>
+        <label for="minimax_max_budget_usd">MiniMax 单次预算上限（USD）</label>
+        <input id="minimax_max_budget_usd" placeholder="0.3；填 0 不限制">
+      </div>
+    </div>
+    <p class="field-help">MiniMax 底层复用 Claude Code 执行器；数据库和 PR 评论里会作为独立 reviewer 记录。</p>
+  </section>
+
+  <section>
     <h2>当前运行配置</h2>
     <button class="secondary" id="effectiveBtn">检查运行配置</button>
     <div class="msg" id="effectiveMsg"></div>
@@ -739,14 +785,16 @@
   var FIELDS = ["gitea_url","gitea_token","webhook_secret","model","trigger_keywords",
                 "concurrency","codex_auth_mode","codex_api_key","codex_sandbox_mode",
                 "claude_enabled","claude_model","claude_api_key","claude_base_url","claude_home","cc_switch_config_dir","cc_switch_provider_id","claude_max_budget_usd",
+                "minimax_enabled","minimax_model","minimax_provider_id","minimax_api_key","minimax_base_url","minimax_max_budget_usd",
                 "repo_allowlist","timeout"];
   var FIELD_GROUPS = {
     common: ["gitea_url","gitea_token","webhook_secret","trigger_keywords","repo_allowlist","concurrency","timeout"],
     codex: ["model","codex_auth_mode","codex_sandbox_mode","codex_api_key"],
-    claude: ["claude_enabled","claude_model","claude_api_key","claude_base_url","claude_home","cc_switch_config_dir","cc_switch_provider_id","claude_max_budget_usd"]
+    claude: ["claude_enabled","claude_model","claude_api_key","claude_base_url","claude_home","cc_switch_config_dir","cc_switch_provider_id","claude_max_budget_usd"],
+    minimax: ["minimax_enabled","minimax_model","minimax_provider_id","minimax_api_key","minimax_base_url","minimax_max_budget_usd"]
   };
-  var DEFAULTS = {claude_model:"sonnet", claude_home:"/claude-home", cc_switch_config_dir:"/cc-switch", claude_max_budget_usd:"0.3"};
-  var SECRETS = {gitea_token:1, webhook_secret:1, codex_api_key:1, claude_api_key:1};
+  var DEFAULTS = {claude_model:"sonnet", claude_home:"/claude-home", cc_switch_config_dir:"/cc-switch", claude_max_budget_usd:"0.3", minimax_max_budget_usd:"0.3"};
+  var SECRETS = {gitea_token:1, webhook_secret:1, codex_api_key:1, claude_api_key:1, minimax_api_key:1};
   var REDACTED = "***set***";
   var jobCache = [];
   var selectedJobID = null;
@@ -889,6 +937,7 @@
         "　<strong>Webhook 密钥：</strong>" + (c.webhook_secret_set ? "已加载" : "未加载") + "</p>" +
         "<p><strong>模型：</strong><code>" + esc(c.model || "") + "</code>　<strong>鉴权：</strong><code>" + esc(c.codex_auth_mode || "") + "</code>　<strong>沙箱：</strong><code>" + esc(c.codex_sandbox_mode || "") + "</code>　<strong>并发：</strong><code>" + esc(c.concurrency) + "</code></p>" +
         "<p><strong>Claude：</strong><code>" + esc(c.claude_enabled ? "enabled" : "disabled") + "</code>　<strong>模型：</strong><code>" + esc(c.claude_model || "") + "</code>　<strong>API Key：</strong>" + (c.claude_api_key_set ? "已加载" : "未加载") + "　<strong>Base URL：</strong><code>" + esc(c.claude_base_url || "默认") + "</code>　<strong>预算：</strong><code>$" + esc(c.claude_max_budget_usd) + "</code>　<strong>cc-switch provider：</strong><code>" + esc(c.cc_switch_provider_id || "未使用") + "</code></p>" +
+        "<p><strong>MiniMax：</strong><code>" + esc(c.minimax_enabled ? "enabled" : "disabled") + "</code>　<strong>Provider：</strong><code>" + esc(c.minimax_provider_id || "未使用") + "</code>　<strong>API Key：</strong>" + (c.minimax_api_key_set ? "已加载" : "未加载") + "　<strong>Base URL：</strong><code>" + esc(c.minimax_base_url || "默认") + "</code>　<strong>模型参数：</strong><code>" + esc(c.minimax_model || "provider/中转站默认") + "</code>　<strong>预算：</strong><code>$" + esc(c.minimax_max_budget_usd) + "</code></p>" +
         "<p><strong>配置来源：</strong><code>" + esc(c.config_source || "db-over-env") + "</code></p>" +
         "<p class='muted'>" + esc(c.runtime_reload_note || "") + "</p>";
       effectiveConfigLoaded = true;
@@ -1225,7 +1274,7 @@
     var repeated = (s.repeated_titles || []).map(function(t){ return "<li>" + esc(t.title) + " <strong>" + esc(t.count) + "</strong></li>"; }).join("");
     var overlap = (s.agent_overlap || []).map(function(o){ return "<li>" + renderSourceCell(report.gitea_url, o) + " " + esc(o.title) + " · " + esc((o.agents || []).join(", ")) + "</li>"; }).join("");
     $("analysisDetail").innerHTML =
-      "<h2>Reviewer 对比</h2><p class='summary-note'>按 reviewer 汇总历史运行结果和发现的问题数，用来比较 Codex / Claude 的稳定性与产出量。</p>" +
+      "<h2>Reviewer 对比</h2><p class='summary-note'>按 reviewer 汇总历史运行结果和发现的问题数，用来比较 Codex / Claude / MiniMax 的稳定性与产出量。</p>" +
       "<table class='data-table'><thead><tr><th>Reviewer</th><th>运行</th><th>成功</th><th>失败</th><th>发现</th><th>Open</th></tr></thead><tbody>" + (agentRows || "<tr><td colspan='6' class='muted'>暂无 reviewer run</td></tr>") + "</tbody></table>" +
       "<h2>严重度分布</h2><table class='data-table'><thead><tr><th>严重度</th><th>数量</th></tr></thead><tbody>" + (sevRows || "<tr><td colspan='2' class='muted'>暂无 findings</td></tr>") + "</tbody></table>" +
       "<h2>重复问题标题</h2><ul>" + (repeated || "<li class='muted'>暂无重复标题</li>") + "</ul>" +
@@ -1248,6 +1297,7 @@
 	  $("saveCommonBtn").addEventListener("click", function(){ saveSettings(FIELD_GROUPS.common, "通用设置"); });
 	  $("saveCodexBtn").addEventListener("click", function(){ saveSettings(FIELD_GROUPS.codex, "Codex 设置"); });
 	  $("saveClaudeBtn").addEventListener("click", function(){ saveSettings(FIELD_GROUPS.claude, "Claude 设置"); });
+	  $("saveMiniMaxBtn").addEventListener("click", function(){ saveSettings(FIELD_GROUPS.minimax, "MiniMax 设置"); });
 	  $("reloadBtn").addEventListener("click", loadSettings);
   $("effectiveBtn").addEventListener("click", loadEffectiveConfig);
   $("uploadBtn").addEventListener("click", uploadAuth);

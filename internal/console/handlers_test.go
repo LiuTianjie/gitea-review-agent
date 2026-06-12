@@ -190,7 +190,7 @@ func TestPostSettingsThenGetRedacts(t *testing.T) {
 	c, _ := newTestConsole(t, nil)
 	h := c.Routes()
 
-	body := `{"settings":{"gitea_url":"https://git.example.com","gitea_token":"super-secret-token","model":"gpt-5-codex"}}`
+	body := `{"settings":{"gitea_url":"https://git.example.com","gitea_token":"super-secret-token","model":"gpt-5-codex","minimax_api_key":"ak-minimax"}}`
 	w := do(t, h, "POST", "/admin/api/settings", body, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("POST settings: status = %d, want 200 (body=%s)", w.Code, w.Body.String())
@@ -214,8 +214,14 @@ func TestPostSettingsThenGetRedacts(t *testing.T) {
 	if m["gitea_token"] != redacted {
 		t.Errorf("gitea_token = %q, want %q (redacted)", m["gitea_token"], redacted)
 	}
+	if m["minimax_api_key"] != redacted {
+		t.Errorf("minimax_api_key = %q, want %q (redacted)", m["minimax_api_key"], redacted)
+	}
 	if strings.Contains(w.Body.String(), "super-secret-token") {
 		t.Errorf("response leaked secret token value: %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "ak-minimax") {
+		t.Errorf("response leaked minimax api key: %s", w.Body.String())
 	}
 }
 

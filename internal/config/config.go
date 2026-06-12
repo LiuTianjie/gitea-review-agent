@@ -28,20 +28,23 @@ const (
 
 // Defaults applied when neither env nor DB settings provide a value.
 const (
-	DefaultListenAddr   = ":8080"
-	DefaultDBPath       = "/data/codex-gitea.db"
-	DefaultCacheDir     = "/cache"
-	DefaultWorkDir      = "/work"
-	DefaultCodexHome    = "/codex-home"
-	DefaultClaudeHome   = "/claude-home"
-	DefaultCCSwitchDir  = "/cc-switch"
-	DefaultModel        = "gpt-5-codex"
-	DefaultClaudeModel  = "sonnet"
-	DefaultAuthMode     = AuthModeAuthFile
-	DefaultSandboxMode  = SandboxReadOnly
-	DefaultConcurrency  = 5
-	DefaultTimeout      = 30 * time.Minute
-	DefaultClaudeBudget = 0.30
+	DefaultListenAddr      = ":8080"
+	DefaultDBPath          = "/data/codex-gitea.db"
+	DefaultCacheDir        = "/cache"
+	DefaultWorkDir         = "/work"
+	DefaultCodexHome       = "/codex-home"
+	DefaultClaudeHome      = "/claude-home"
+	DefaultCCSwitchDir     = "/cc-switch"
+	DefaultModel           = "gpt-5-codex"
+	DefaultClaudeModel     = "sonnet"
+	DefaultMiniMaxModel    = ""
+	DefaultMiniMaxProvider = ""
+	DefaultAuthMode        = AuthModeAuthFile
+	DefaultSandboxMode     = SandboxReadOnly
+	DefaultConcurrency     = 5
+	DefaultTimeout         = 30 * time.Minute
+	DefaultClaudeBudget    = 0.30
+	DefaultMiniMaxBudget   = 0.30
 )
 
 // DefaultTriggerKeywords are the comment phrases that trigger a review.
@@ -77,6 +80,14 @@ type Config struct {
 	CCSwitchProvider   string
 	ClaudeMaxBudgetUSD float64
 
+	// MiniMax via Claude Code + cc-switch
+	MiniMaxEnabled      bool
+	MiniMaxModel        string
+	MiniMaxProvider     string
+	MiniMaxAPIKey       string
+	MiniMaxBaseURL      string
+	MiniMaxMaxBudgetUSD float64
+
 	// Console
 	AdminPassword string
 
@@ -105,32 +116,38 @@ func (c *Config) Clone() *Config {
 // for any variable that is unset or empty.
 func LoadEnv() *Config {
 	c := &Config{
-		ListenAddr:         getEnv("LISTEN_ADDR", DefaultListenAddr),
-		DBPath:             getEnv("DB_PATH", DefaultDBPath),
-		CacheDir:           getEnv("CACHE_DIR", DefaultCacheDir),
-		WorkDir:            getEnv("WORK_DIR", DefaultWorkDir),
-		CodexHome:          getEnv("CODEX_HOME", DefaultCodexHome),
-		GiteaURL:           os.Getenv("GITEA_URL"),
-		GiteaToken:         os.Getenv("GITEA_TOKEN"),
-		WebhookSecret:      os.Getenv("WEBHOOK_SECRET"),
-		Model:              getEnv("MODEL", DefaultModel),
-		CodexAuthMode:      normalizeAuthMode(getEnv("CODEX_AUTH_MODE", DefaultAuthMode)),
-		CodexAPIKey:        os.Getenv("CODEX_API_KEY"),
-		CodexSandbox:       normalizeSandboxMode(getEnv("CODEX_SANDBOX_MODE", DefaultSandboxMode)),
-		ClaudeEnabled:      parseBool(os.Getenv("CLAUDE_ENABLED"), false),
-		ClaudeModel:        getEnv("CLAUDE_MODEL", DefaultClaudeModel),
-		ClaudeAPIKey:       os.Getenv("CLAUDE_API_KEY"),
-		ClaudeBaseURL:      os.Getenv("CLAUDE_BASE_URL"),
-		ClaudeHome:         getEnv("CLAUDE_HOME", DefaultClaudeHome),
-		CCSwitchConfigDir:  getEnv("CC_SWITCH_CONFIG_DIR", DefaultCCSwitchDir),
-		CCSwitchProvider:   os.Getenv("CC_SWITCH_PROVIDER_ID"),
-		ClaudeMaxBudgetUSD: parseFloat(os.Getenv("CLAUDE_MAX_BUDGET_USD"), DefaultClaudeBudget),
-		AdminPassword:      os.Getenv("ADMIN_PASSWORD"),
-		TriggerKeywords:    parseList(os.Getenv("TRIGGER_KEYWORDS"), DefaultTriggerKeywords),
-		Concurrency:        parseInt(os.Getenv("CONCURRENCY"), DefaultConcurrency),
-		RepoAllowlist:      parseList(os.Getenv("REPO_ALLOWLIST"), nil),
-		Timeout:            parseDuration(os.Getenv("TIMEOUT"), DefaultTimeout),
-		SecretKey:          os.Getenv("SECRET_KEY"),
+		ListenAddr:          getEnv("LISTEN_ADDR", DefaultListenAddr),
+		DBPath:              getEnv("DB_PATH", DefaultDBPath),
+		CacheDir:            getEnv("CACHE_DIR", DefaultCacheDir),
+		WorkDir:             getEnv("WORK_DIR", DefaultWorkDir),
+		CodexHome:           getEnv("CODEX_HOME", DefaultCodexHome),
+		GiteaURL:            os.Getenv("GITEA_URL"),
+		GiteaToken:          os.Getenv("GITEA_TOKEN"),
+		WebhookSecret:       os.Getenv("WEBHOOK_SECRET"),
+		Model:               getEnv("MODEL", DefaultModel),
+		CodexAuthMode:       normalizeAuthMode(getEnv("CODEX_AUTH_MODE", DefaultAuthMode)),
+		CodexAPIKey:         os.Getenv("CODEX_API_KEY"),
+		CodexSandbox:        normalizeSandboxMode(getEnv("CODEX_SANDBOX_MODE", DefaultSandboxMode)),
+		ClaudeEnabled:       parseBool(os.Getenv("CLAUDE_ENABLED"), false),
+		ClaudeModel:         getEnv("CLAUDE_MODEL", DefaultClaudeModel),
+		ClaudeAPIKey:        os.Getenv("CLAUDE_API_KEY"),
+		ClaudeBaseURL:       os.Getenv("CLAUDE_BASE_URL"),
+		ClaudeHome:          getEnv("CLAUDE_HOME", DefaultClaudeHome),
+		CCSwitchConfigDir:   getEnv("CC_SWITCH_CONFIG_DIR", DefaultCCSwitchDir),
+		CCSwitchProvider:    os.Getenv("CC_SWITCH_PROVIDER_ID"),
+		ClaudeMaxBudgetUSD:  parseFloat(os.Getenv("CLAUDE_MAX_BUDGET_USD"), DefaultClaudeBudget),
+		MiniMaxEnabled:      parseBool(os.Getenv("MINIMAX_ENABLED"), false),
+		MiniMaxModel:        getEnv("MINIMAX_MODEL", DefaultMiniMaxModel),
+		MiniMaxProvider:     getEnv("MINIMAX_PROVIDER_ID", DefaultMiniMaxProvider),
+		MiniMaxAPIKey:       os.Getenv("MINIMAX_API_KEY"),
+		MiniMaxBaseURL:      os.Getenv("MINIMAX_BASE_URL"),
+		MiniMaxMaxBudgetUSD: parseFloat(os.Getenv("MINIMAX_MAX_BUDGET_USD"), DefaultMiniMaxBudget),
+		AdminPassword:       os.Getenv("ADMIN_PASSWORD"),
+		TriggerKeywords:     parseList(os.Getenv("TRIGGER_KEYWORDS"), DefaultTriggerKeywords),
+		Concurrency:         parseInt(os.Getenv("CONCURRENCY"), DefaultConcurrency),
+		RepoAllowlist:       parseList(os.Getenv("REPO_ALLOWLIST"), nil),
+		Timeout:             parseDuration(os.Getenv("TIMEOUT"), DefaultTimeout),
+		SecretKey:           os.Getenv("SECRET_KEY"),
 	}
 	return c
 }
@@ -199,6 +216,24 @@ func (c *Config) ApplyOverrides(settings map[string]string) {
 	if v, ok := settings["claude_max_budget_usd"]; ok {
 		c.ClaudeMaxBudgetUSD = parseFloat(v, c.ClaudeMaxBudgetUSD)
 	}
+	if v, ok := settings["minimax_enabled"]; ok {
+		c.MiniMaxEnabled = parseBool(v, c.MiniMaxEnabled)
+	}
+	if v, ok := settings["minimax_model"]; ok {
+		c.MiniMaxModel = strings.TrimSpace(v)
+	}
+	if v, ok := settings["minimax_provider_id"]; ok {
+		c.MiniMaxProvider = strings.TrimSpace(v)
+	}
+	if v, ok := settings["minimax_api_key"]; ok {
+		c.MiniMaxAPIKey = v
+	}
+	if v, ok := settings["minimax_base_url"]; ok {
+		c.MiniMaxBaseURL = strings.TrimSpace(v)
+	}
+	if v, ok := settings["minimax_max_budget_usd"]; ok {
+		c.MiniMaxMaxBudgetUSD = parseFloat(v, c.MiniMaxMaxBudgetUSD)
+	}
 	if v, ok := settings["admin_password"]; ok {
 		c.AdminPassword = v
 	}
@@ -249,6 +284,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ClaudeMaxBudgetUSD < 0 {
 		return fmt.Errorf("claude_max_budget_usd must be >= 0, got %g", c.ClaudeMaxBudgetUSD)
+	}
+	if c.MiniMaxMaxBudgetUSD < 0 {
+		return fmt.Errorf("minimax_max_budget_usd must be >= 0, got %g", c.MiniMaxMaxBudgetUSD)
 	}
 	return nil
 }

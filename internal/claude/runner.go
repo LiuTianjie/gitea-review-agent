@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -23,6 +24,7 @@ const readOnlyTools = "Read,Grep,Glob,Bash(git diff:*),Bash(git show:*),Bash(git
 var findingsSchema []byte
 
 type Options struct {
+	Name              string
 	Bin               string
 	Model             string
 	APIKey            string
@@ -36,6 +38,7 @@ type Options struct {
 }
 
 type Runner struct {
+	name              string
 	bin               string
 	model             string
 	apiKey            string
@@ -50,7 +53,13 @@ type Runner struct {
 
 var _ model.Reviewer = (*Runner)(nil)
 
+var providerMu sync.Mutex
+
 func New(opts Options) *Runner {
+	name := strings.TrimSpace(opts.Name)
+	if name == "" {
+		name = "claude"
+	}
 	bin := opts.Bin
 	if env := os.Getenv("CLAUDE_BIN"); env != "" {
 		bin = env
@@ -67,6 +76,7 @@ func New(opts Options) *Runner {
 		timeout = defaultTimeout
 	}
 	return &Runner{
+		name:              name,
 		bin:               bin,
 		model:             opts.Model,
 		apiKey:            opts.APIKey,
@@ -80,14 +90,11 @@ func New(opts Options) *Runner {
 	}
 }
 
-func (r *Runner) Name() string { return "claude" }
+func (r *Runner) Name() string { return r.name }
 
 func (r *Runner) Review(ctx context.Context, in model.CodexInput) (*model.ReviewResult, error) {
 	if in.Worktree == "" {
-		return nil, fmt.Errorf("claude review: empty worktree")
-	}
-	if err := r.applyProvider(ctx); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s review: empty worktree", r.Name())
 	}
 	args := []string{
 		"--print",
@@ -104,7 +111,7 @@ func (r *Runner) Review(ctx context.Context, in model.CodexInput) (*model.Review
 		args = append(args, "--resume", in.SessionID)
 	}
 	args = append(args, buildReviewPrompt(in.BaseRef, in.Note, in.SessionID != ""))
-	out, err := r.run(ctx, in.Worktree, r.bin, args, "")
+	out, err := r.runWithProvider(ctx, in.Worktree, r.bin, args, "")
 	if err != nil {
 		return nil, err
 	}
@@ -122,10 +129,7 @@ func (r *Runner) Review(ctx context.Context, in model.CodexInput) (*model.Review
 
 func (r *Runner) Ask(ctx context.Context, sessionID, worktree, question string) (string, error) {
 	if sessionID == "" {
-		return "", fmt.Errorf("claude ask: empty session id")
-	}
-	if err := r.applyProvider(ctx); err != nil {
-		return "", err
+		return "", fmt.Errorf("%s ask: empty session id", r.Name())
 	}
 	args := []string{
 		"--print",
@@ -138,7 +142,7 @@ func (r *Runner) Ask(ctx context.Context, sessionID, worktree, question string) 
 		args = append(args, "--model", r.model)
 	}
 	args = append(args, "--resume", sessionID, buildAskPrompt(question))
-	out, err := r.run(ctx, worktree, r.bin, args, "")
+	out, err := r.runWithProvider(ctx, worktree, r.bin, args, "")
 	if err != nil {
 		return "", err
 	}
@@ -194,6 +198,18 @@ func (r *Runner) applyProvider(ctx context.Context) error {
 		return fmt.Errorf("cc-switch provider switch: %w", err)
 	}
 	return nil
+}
+
+func (r *Runner) runWithProvider(ctx context.Context, dir, bin string, args []string, stdin string) ([]byte, error) {
+	if strings.TrimSpace(r.ccSwitchProvider) == "" {
+		return r.run(ctx, dir, bin, args, stdin)
+	}
+	providerMu.Lock()
+	defer providerMu.Unlock()
+	if err := r.applyProvider(ctx); err != nil {
+		return nil, err
+	}
+	return r.run(ctx, dir, bin, args, stdin)
 }
 
 func (r *Runner) env() []string {

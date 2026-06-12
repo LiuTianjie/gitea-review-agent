@@ -179,6 +179,19 @@ func buildReviewers(cfg *config.Config) []model.Reviewer {
 			MaxBudgetUSD:      cfg.ClaudeMaxBudgetUSD,
 		}))
 	}
+	if cfg.MiniMaxEnabled {
+		reviewers = append(reviewers, claude.New(claude.Options{
+			Name:              "minimax",
+			Model:             cfg.MiniMaxModel,
+			APIKey:            cfg.MiniMaxAPIKey,
+			BaseURL:           cfg.MiniMaxBaseURL,
+			ClaudeHome:        cfg.ClaudeHome,
+			CCSwitchConfigDir: cfg.CCSwitchConfigDir,
+			CCSwitchProvider:  cfg.MiniMaxProvider,
+			Timeout:           cfg.Timeout,
+			MaxBudgetUSD:      cfg.MiniMaxMaxBudgetUSD,
+		}))
+	}
 	return reviewers
 }
 

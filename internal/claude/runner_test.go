@@ -124,6 +124,85 @@ func TestRunnerReviewOmitsBudgetWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestRunnerReviewCanUseNamedCCSwitchProvider(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "claude.log")
+	bin := writeClaudeStub(t, logPath)
+
+	r := New(Options{
+		Name:             "minimax",
+		Bin:              bin,
+		CCSwitchBin:      bin,
+		CCSwitchProvider: "minimaxreview",
+		Model:            "minimax-m3",
+		APIKey:           "ak-minimax",
+		BaseURL:          "https://minimax-relay.example.com",
+	})
+	res, err := r.Review(context.Background(), model.CodexInput{Worktree: t.TempDir(), BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if r.Name() != "minimax" {
+		t.Fatalf("Name = %q, want minimax", r.Name())
+	}
+	if res.SessionID != "claude-session-1" {
+		t.Fatalf("SessionID = %q, want claude-session-1", res.SessionID)
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	log := string(raw)
+	for _, want := range []string{
+		"ARG[0]=--app",
+		"ARG[1]=claude",
+		"ARG[2]=provider",
+		"ARG[3]=switch",
+		"ARG[4]=minimaxreview",
+		"--model",
+		"minimax-m3",
+		"ANTHROPIC_API_KEY=ak-minimax",
+		"ANTHROPIC_BASE_URL=https://minimax-relay.example.com",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("log missing %q:\n%s", want, log)
+		}
+	}
+}
+
+func TestRunnerReviewCanUseDirectBaseURLWithoutProviderSwitch(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "claude.log")
+	bin := writeClaudeStub(t, logPath)
+
+	r := New(Options{
+		Name:    "minimax",
+		Bin:     bin,
+		Model:   "minimax-m3",
+		APIKey:  "ak-minimax",
+		BaseURL: "https://minimax-relay.example.com",
+	})
+	if _, err := r.Review(context.Background(), model.CodexInput{Worktree: t.TempDir(), BaseRef: "main"}); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	log := string(raw)
+	if strings.Contains(log, "ARG[0]=--app") || strings.Contains(log, "ARG[2]=provider") {
+		t.Fatalf("direct Base URL mode should not switch cc-switch provider:\n%s", log)
+	}
+	for _, want := range []string{
+		"ANTHROPIC_API_KEY=ak-minimax",
+		"ANTHROPIC_BASE_URL=https://minimax-relay.example.com",
+		"--model",
+		"minimax-m3",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("log missing %q:\n%s", want, log)
+		}
+	}
+}
+
 func TestRunnerReviewTimeout(t *testing.T) {
 	bin := writeClaudeStub(t, filepath.Join(t.TempDir(), "claude.log"))
 	t.Setenv("STUB_SLEEP", "5")

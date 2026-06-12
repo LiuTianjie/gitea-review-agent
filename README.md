@@ -1,7 +1,7 @@
 # codex-gitea
 
 Self-hosted service that auto-reviews Gitea pull requests with the Codex CLI
-and, optionally, Claude Code.
+and, optionally, Claude Code or a MiniMax-compatible reviewer.
 On each PR event it runs a **static** code review (read-only — never builds, runs,
 or tests your code) and posts the findings back as inline review comments plus a
 summary. Reviews are **stateful**: follow-up pushes and `/review` comments resume
@@ -29,6 +29,11 @@ Gitea webhook ──▶ verify HMAC ──▶ enqueue (SQLite) ──▶ worker 
 - **Optional Claude reviewer** — set `CLAUDE_ENABLED=true` to post a second,
   independent Claude review. Codex and Claude share the same prepared worktree
   and diff for a job; one reviewer failing does not block the other.
+- **Optional MiniMax reviewer** — set `MINIMAX_ENABLED=true` and either configure
+  `MINIMAX_API_KEY` / `MINIMAX_BASE_URL` directly (for relay gateways) or provide
+  a Claude app provider id in cc-switch. The service runs Claude Code through
+  that MiniMax-compatible endpoint but stores/posts it as an independent
+  `minimax` reviewer, so `/review minimax ...` targets its session.
 - **On-demand analytics** — the admin console can generate saved full-history
   analysis reports for findings, severities, tags, agent results, and overlap.
 
@@ -100,6 +105,12 @@ Env vars (all optional except `ADMIN_PASSWORD`; the console can set the rest):
 | `CLAUDE_MAX_BUDGET_USD` | `0.3` | per Claude Code run budget cap; set `0` to disable |
 | `CC_SWITCH_CONFIG_DIR` | `/cc-switch` | cc-switch provider/proxy config directory |
 | `CC_SWITCH_PROVIDER_ID` | — | optional provider id to switch before Claude runs |
+| `MINIMAX_ENABLED` | `false` | enable the MiniMax reviewer via Claude Code |
+| `MINIMAX_PROVIDER_ID` | — | optional cc-switch Claude app provider id used before MiniMax review runs |
+| `MINIMAX_API_KEY` | — | optional MiniMax/relay API key passed to Claude Code |
+| `MINIMAX_BASE_URL` | — | optional MiniMax/relay Anthropic-compatible base URL |
+| `MINIMAX_MODEL` | — | optional `claude --model` override; leave empty to use provider/relay defaults |
+| `MINIMAX_MAX_BUDGET_USD` | `0.3` | per MiniMax/Claude Code run budget cap; set `0` to disable |
 | `CONCURRENCY` | `5` | worker count |
 | `TRIGGER_KEYWORDS` | `/review,@review` | comma-separated |
 | `REPO_ALLOWLIST` | — | comma-separated `owner/repo`; empty = all |

@@ -224,7 +224,7 @@ func classifyError(err error) classifiedError {
 		return classifiedError{errorType: model.ErrorTypeGitea, retryable: isTransient(msg)}
 	case strings.Contains(msg, "no available channel"), strings.Contains(msg, "api error"), strings.Contains(msg, "relay"), strings.Contains(msg, "upstream"):
 		return classifiedError{errorType: model.ErrorTypeUpstream, retryable: true}
-	case strings.Contains(msg, "codex review"), strings.Contains(msg, "claude review"), strings.Contains(msg, "reviewer"):
+	case strings.Contains(msg, "codex review"), strings.Contains(msg, "claude review"), strings.Contains(msg, "minimax review"), strings.Contains(msg, "reviewer"):
 		return classifiedError{errorType: model.ErrorTypeReviewer, retryable: isTransient(msg)}
 	default:
 		return classifiedError{errorType: model.ErrorTypeUnknown, retryable: isTransient(msg)}
