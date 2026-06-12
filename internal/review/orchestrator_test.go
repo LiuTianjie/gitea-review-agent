@@ -391,14 +391,69 @@ func TestInspectWorktreeDiffUsesBaseToHeadThreeDotDiff(t *testing.T) {
 	}
 }
 
+func TestCollectRepositoryGuidanceFindsNormativeFiles(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"AGENTS.md":     "follow repo agent rules",
+		"README.md":     "project contract overview",
+		"pkg/AGENTS.md": "pkg-specific rules",
+		".github/instructions/go.instructions.md": "go review rules",
+		"node_modules/pkg/README.md":              "ignore dependencies",
+	}
+	for name, body := range files {
+		path := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", name, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	guidance, err := collectRepositoryGuidance(dir)
+	if err != nil {
+		t.Fatalf("collectRepositoryGuidance: %v", err)
+	}
+	paths := map[string]string{}
+	for _, f := range guidance {
+		paths[f.Path] = f.Contents
+	}
+	for _, want := range []string{"AGENTS.md", "README.md", "pkg/AGENTS.md", ".github/instructions/go.instructions.md"} {
+		if paths[want] == "" {
+			t.Fatalf("missing guidance file %s in %+v", want, guidance)
+		}
+	}
+	if paths["node_modules/pkg/README.md"] != "" {
+		t.Fatalf("dependency README should be ignored: %+v", guidance)
+	}
+	if guidance[0].Path != "AGENTS.md" {
+		t.Fatalf("root AGENTS.md should have highest priority: %+v", guidance)
+	}
+
+	note := appendRepositoryGuidanceNote("existing context", guidance)
+	if !strings.Contains(note, "Repository guidance context") ||
+		!strings.Contains(note, "--- AGENTS.md ---") ||
+		!strings.Contains(note, "project contract overview") ||
+		!strings.Contains(note, "existing context") {
+		t.Fatalf("guidance note missing expected content:\n%s", note)
+	}
+}
+
 func TestReview_OpenedPassesDiffInventoryNote(t *testing.T) {
 	st := newFakeStore()
 	cx := &fakeCodex{result: &model.ReviewResult{
 		Summary: "clean", OverallSeverity: model.Severity("none"), SessionID: "thread-1",
 	}}
 	gt := &fakeGitea{diff: diffWith("a.txt", 1)}
+	worktree := testDiffRepo(t)
+	if err := os.WriteFile(filepath.Join(worktree, "AGENTS.md"), []byte("review all changed files"), 0o644); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "README.md"), []byte("documented behavior matters"), 0o644); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
 	o := &Orchestrator{
-		Store: st, Cache: &fakeCache{worktree: testDiffRepo(t)}, Reviewers: []model.Reviewer{cx}, Gitea: gt,
+		Store: st, Cache: &fakeCache{worktree: worktree}, Reviewers: []model.Reviewer{cx}, Gitea: gt,
 	}
 
 	if err := o.Process(context.Background(), prEvent("opened", "head123")); err != nil {
@@ -409,6 +464,13 @@ func TestReview_OpenedPassesDiffInventoryNote(t *testing.T) {
 		!strings.Contains(cx.lastIn.Note, "a.txt") ||
 		!strings.Contains(cx.lastIn.Note, "b.txt") {
 		t.Fatalf("reviewer note missing diff inventory:\n%s", cx.lastIn.Note)
+	}
+	if !strings.Contains(cx.lastIn.Note, "Repository guidance context") ||
+		!strings.Contains(cx.lastIn.Note, "--- AGENTS.md ---") ||
+		!strings.Contains(cx.lastIn.Note, "review all changed files") ||
+		!strings.Contains(cx.lastIn.Note, "--- README.md ---") ||
+		!strings.Contains(cx.lastIn.Note, "documented behavior matters") {
+		t.Fatalf("reviewer note missing repository guidance:\n%s", cx.lastIn.Note)
 	}
 }
 

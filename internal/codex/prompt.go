@@ -12,7 +12,8 @@ const reviewLanguageInstruction = `Language rules:
 
 const reviewQualityInstruction = `Review process:
 - First list changed files with ` + "`git diff --name-only <base>...HEAD`" + ` and make sure every relevant changed file is considered.
-- Look for repository review guidance before judging findings. Read any present files that are relevant, such as ` + "`AGENTS.md`, `CLAUDE.md`, `CODE_REVIEW.md`, `CODING_STANDARDS.md`, `.github/copilot-instructions.md`, `.github/instructions/**/*.instructions.md`, `.coderabbit.yaml`, `.greptile/*`, `.cursorrules`" + `. Apply path-specific instructions only to matching files.
+- Look for repository review guidance before judging findings. Read any present files that are relevant, such as ` + "`AGENTS.md`, `CLAUDE.md`, `README.md`, `CODE_REVIEW.md`, `CODING_STANDARDS.md`, `CONTRIBUTING.md`, `.github/copilot-instructions.md`, `.github/instructions/**/*.instructions.md`, `.coderabbit.yaml`, `.greptile/*`, `.cursorrules`" + `. Apply path-specific instructions only to matching files.
+- If the additional context includes "Repository guidance context", read it before reviewing the diff and use it as the starting set of repository instructions.
 - Treat generated output, lock files, vendored dependencies, and build artifacts as low-value review targets unless the PR changes behavior through them or repository instructions explicitly include them.
 - Prioritize correctness regressions, security/auth/input validation, API and data-contract breaks, persistence/migration compatibility, concurrency or async lifecycle bugs, resource leaks, error handling, and edge cases.
 - If the additional context includes "Current PR diff inventory", treat it as the authoritative coverage checklist for this review. Use it to plan file-by-file coverage before deciding findings.

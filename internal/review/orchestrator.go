@@ -8,7 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/turning4th/codex-gitea/internal/model"
@@ -39,6 +42,12 @@ type worktreeDiffSummary struct {
 	Sample    []string
 	Files     []string
 	Numstat   []string
+}
+
+type guidanceFile struct {
+	Path      string
+	Contents  string
+	Truncated bool
 }
 
 func (o *Orchestrator) logf(format string, args ...any) {
@@ -252,6 +261,152 @@ func appendDiffInventoryNote(note string, summary worktreeDiffSummary) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+func collectRepositoryGuidance(worktree string) ([]guidanceFile, error) {
+	const (
+		maxFiles        = 24
+		maxBytesPerFile = 12 * 1024
+	)
+	worktree = strings.TrimSpace(worktree)
+	if worktree == "" {
+		return nil, nil
+	}
+	skipDirs := map[string]bool{
+		".git": true, ".cache": true, ".next": true, ".turbo": true,
+		"build": true, "coverage": true, "dist": true, "node_modules": true,
+		"target": true, "vendor": true,
+	}
+	var paths []string
+	err := filepath.WalkDir(worktree, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, relErr := filepath.Rel(worktree, path)
+		if relErr != nil || rel == "." {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if d.IsDir() {
+			if skipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if isRepositoryGuidancePath(rel) {
+			paths = append(paths, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(paths, func(i, j int) bool {
+		pi, pj := guidancePriority(paths[i]), guidancePriority(paths[j])
+		if pi != pj {
+			return pi < pj
+		}
+		return paths[i] < paths[j]
+	})
+	if len(paths) > maxFiles {
+		paths = paths[:maxFiles]
+	}
+	out := make([]guidanceFile, 0, len(paths))
+	for _, rel := range paths {
+		data, err := os.ReadFile(filepath.Join(worktree, filepath.FromSlash(rel)))
+		if err != nil {
+			continue
+		}
+		truncated := false
+		if len(data) > maxBytesPerFile {
+			data = data[:maxBytesPerFile]
+			truncated = true
+		}
+		text := strings.TrimSpace(string(data))
+		if text == "" {
+			continue
+		}
+		out = append(out, guidanceFile{Path: rel, Contents: text, Truncated: truncated})
+	}
+	return out, nil
+}
+
+func isRepositoryGuidancePath(rel string) bool {
+	base := strings.ToLower(filepath.Base(rel))
+	switch base {
+	case "agents.md", "claude.md", "readme.md", "code_review.md", "coding_standards.md", "contributing.md", "security.md", ".coderabbit.yaml":
+		return true
+	}
+	lower := strings.ToLower(rel)
+	if lower == ".github/copilot-instructions.md" {
+		return true
+	}
+	if strings.HasPrefix(lower, ".github/instructions/") && strings.HasSuffix(lower, ".instructions.md") {
+		return true
+	}
+	if strings.HasPrefix(lower, ".greptile/") {
+		return true
+	}
+	return false
+}
+
+func guidancePriority(path string) int {
+	lower := strings.ToLower(path)
+	base := strings.ToLower(filepath.Base(lower))
+	if filepath.Dir(lower) == "." {
+		switch base {
+		case "agents.md":
+			return 0
+		case "claude.md":
+			return 1
+		case "code_review.md", "coding_standards.md", "contributing.md":
+			return 2
+		case "readme.md":
+			return 3
+		case "security.md":
+			return 4
+		}
+	}
+	if strings.HasPrefix(lower, ".github/") {
+		return 5
+	}
+	if strings.HasPrefix(lower, ".greptile/") || base == ".coderabbit.yaml" {
+		return 6
+	}
+	switch base {
+	case "agents.md":
+		return 7
+	case "claude.md":
+		return 8
+	case "readme.md":
+		return 9
+	default:
+		return 10
+	}
+}
+
+func appendRepositoryGuidanceNote(note string, files []guidanceFile) string {
+	if len(files) == 0 {
+		return note
+	}
+	var b strings.Builder
+	if strings.TrimSpace(note) != "" {
+		b.WriteString(strings.TrimSpace(note))
+		b.WriteString("\n\n")
+	}
+	b.WriteString("Repository guidance context (read this before reviewing the diff):\n")
+	b.WriteString("- These files were found automatically in the checked-out repository before review. Treat them as repository-specific instructions and apply path-specific guidance only where it matches.\n")
+	b.WriteString("- Use README content for project intent, setup assumptions, and documented contracts; use AGENTS/CLAUDE/CODE_REVIEW style files as direct review guidance.\n")
+	for _, f := range files {
+		fmt.Fprintf(&b, "\n--- %s", f.Path)
+		if f.Truncated {
+			b.WriteString(" (truncated)")
+		}
+		b.WriteString(" ---\n")
+		b.WriteString(f.Contents)
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 func (o *Orchestrator) ensurePullRequestOpen(ctx context.Context, jobID int64, pr model.PRRef) error {
 	status, err := o.Gitea.GetPullRequestStatus(ctx, pr)
 	if err != nil {
@@ -314,6 +469,18 @@ func (o *Orchestrator) review(ctx context.Context, jobID int64, ev *model.Webhoo
 		diffSummary = summary
 		o.jobLog(ctx, jobID, "git", formatWorktreeDiffSummary(summary))
 	}
+	guidance, err := collectRepositoryGuidance(worktree)
+	if err != nil {
+		o.jobLog(ctx, jobID, "git", "repository guidance scan failed: "+err.Error())
+	} else if len(guidance) > 0 {
+		paths := make([]string, 0, len(guidance))
+		for _, f := range guidance {
+			paths = append(paths, f.Path)
+		}
+		o.jobLog(ctx, jobID, "git", "repository guidance found: "+strings.Join(paths, ", "))
+	} else {
+		o.jobLog(ctx, jobID, "git", "repository guidance found: none")
+	}
 
 	o.jobLog(ctx, jobID, "gitea", "fetching PR diff")
 	diff, err := o.Gitea.GetDiff(ctx, pr)
@@ -334,7 +501,7 @@ func (o *Orchestrator) review(ctx context.Context, jobID int64, ev *model.Webhoo
 	var errs []error
 	successes := 0
 	for _, reviewer := range o.reviewers() {
-		if err := o.runReviewer(ctx, jobID, ev, isUpdate, pull.ID, worktree, diff, diffSummary, discussion, reviewer); err != nil {
+		if err := o.runReviewer(ctx, jobID, ev, isUpdate, pull.ID, worktree, diff, diffSummary, guidance, discussion, reviewer); err != nil {
 			if errors.Is(err, errPullRequestClosed) {
 				o.jobLog(ctx, jobID, "skip", "PR closed or merged; stopping remaining reviewers")
 				break
@@ -351,7 +518,7 @@ func (o *Orchestrator) review(ctx context.Context, jobID int64, ev *model.Webhoo
 	return nil
 }
 
-func (o *Orchestrator) runReviewer(ctx context.Context, jobID int64, ev *model.WebhookEvent, isUpdate bool, pullID int64, worktree string, diff model.DiffMap, diffSummary worktreeDiffSummary, discussion []model.PullComment, reviewer model.Reviewer) error {
+func (o *Orchestrator) runReviewer(ctx context.Context, jobID int64, ev *model.WebhookEvent, isUpdate bool, pullID int64, worktree string, diff model.DiffMap, diffSummary worktreeDiffSummary, guidance []guidanceFile, discussion []model.PullComment, reviewer model.Reviewer) error {
 	pr := ev.PR
 	agent := reviewer.Name()
 	state, err := o.Store.GetReviewerState(ctx, pr, agent)
@@ -381,6 +548,7 @@ func (o *Orchestrator) runReviewer(ctx context.Context, jobID int64, ev *model.W
 		in.SessionID = sessionID
 		in.Note = fmt.Sprintf("PR head 已从 %s 更新到 %s。请基于 %s 重新审查当前 diff，并在摘要中说明之前报告的问题哪些已经修复。", shortSHA(prevHead), shortSHA(ev.HeadSHA), ev.BaseRef)
 	}
+	in.Note = appendRepositoryGuidanceNote(in.Note, guidance)
 	in.Note = appendDiffInventoryNote(in.Note, diffSummary)
 	in.Note = appendCommentContextNote(in.Note, discussion)
 	in.Note = appendPriorFindingsNote(in.Note, priorOpen)
