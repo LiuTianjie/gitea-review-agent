@@ -36,6 +36,18 @@ if [ "$1" = "auth" ]; then
   echo "Claude auth ok"
   exit 0
 fi
+if [ -n "$STUB_ERROR_JSON" ]; then
+  printf '%s\n' "$STUB_ERROR_JSON"
+  exit 1
+fi
+case "$*" in
+  *"Return exactly OK. Do not use tools."*)
+    cat <<'JSON'
+{"type":"result","session_id":"claude-smoke-session","result":"OK"}
+JSON
+    exit 0
+    ;;
+esac
 cat <<'JSON'
 {"type":"result","session_id":"claude-session-1","result":"{\"summary\":\"claude summary\",\"overall_severity\":\"high\",\"findings\":[{\"path\":\"calc.go\",\"line\":19,\"side\":\"NEW\",\"severity\":\"high\",\"title\":\"bad math\",\"body\":\"boom\",\"tags\":[\"runtime\"]}],\"resolved_fingerprints\":[]}"}
 JSON
@@ -220,6 +232,19 @@ func TestParseReviewOutputReportsClaudeAPIError(t *testing.T) {
 	}
 }
 
+func TestRunnerReviewReportsStructuredCLIAPIError(t *testing.T) {
+	bin := writeClaudeStub(t, filepath.Join(t.TempDir(), "claude.log"))
+	t.Setenv("STUB_ERROR_JSON", `{"type":"result","subtype":"success","is_error":true,"api_error_status":401,"result":"Invalid API key · Fix external API key","session_id":"s1"}`)
+	r := New(Options{Name: "minimax", Bin: bin})
+	_, err := r.Review(context.Background(), model.CodexInput{Worktree: t.TempDir(), BaseRef: "main"})
+	if err == nil {
+		t.Fatal("Review err = nil, want structured API error")
+	}
+	if got := err.Error(); !strings.Contains(got, "minimax api error 401: Invalid API key") || strings.Contains(got, `"type":"result"`) {
+		t.Fatalf("err = %q, want concise minimax API error without raw JSON", got)
+	}
+}
+
 func TestRunnerStatusReturnsErrorWhenChecksFail(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing-claude")
 	r := New(Options{Bin: missing, CCSwitchBin: missing, Timeout: 100 * time.Millisecond})
@@ -245,6 +270,9 @@ func TestRunnerStatusDoesNotRequireCCSwitchWithoutProvider(t *testing.T) {
 	if !strings.Contains(status, "cc-switch: skipped") || !strings.Contains(status, "claude auth") {
 		t.Fatalf("status missing optional cc-switch/auth details:\n%s", status)
 	}
+	if !strings.Contains(status, "claude api smoke test:\nOK") {
+		t.Fatalf("status missing real API smoke test:\n%s", status)
+	}
 }
 
 func TestRunnerStatusRequiresCCSwitchWhenProviderConfigured(t *testing.T) {
@@ -256,5 +284,19 @@ func TestRunnerStatusRequiresCCSwitchWhenProviderConfigured(t *testing.T) {
 	status, err := r.Status(context.Background())
 	if err == nil {
 		t.Fatalf("Status err = nil, want cc-switch failure when provider is configured\n%s", status)
+	}
+}
+
+func TestRunnerStatusReportsSmokeAPIError(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "claude.log")
+	bin := writeClaudeStub(t, logPath)
+	t.Setenv("STUB_ERROR_JSON", `{"type":"result","is_error":true,"api_error_status":401,"result":"Invalid API key · Fix external API key"}`)
+	r := New(Options{Name: "minimax", Bin: bin, Timeout: time.Second})
+	status, err := r.Status(context.Background())
+	if err == nil {
+		t.Fatalf("Status err = nil, want smoke failure\n%s", status)
+	}
+	if !strings.Contains(status, "minimax api smoke test failed: minimax api error 401: Invalid API key") {
+		t.Fatalf("status missing concise smoke API error:\n%s", status)
 	}
 }

@@ -115,7 +115,7 @@ func (r *Runner) Review(ctx context.Context, in model.CodexInput) (*model.Review
 	if err != nil {
 		return nil, err
 	}
-	result, sessionID, err := parseReviewOutput(out)
+	result, sessionID, err := parseReviewOutputForAgent(out, r.Name())
 	if err != nil {
 		return nil, err
 	}
@@ -182,11 +182,43 @@ func (r *Runner) Status(ctx context.Context) (string, error) {
 		parts = append(parts, "claude auth failed: "+err.Error())
 		failures = append(failures, "claude auth: "+err.Error())
 	}
+	if smoke, err := r.smokeTest(ctx); err == nil {
+		parts = append(parts, r.Name()+" api smoke test:\n"+smoke)
+	} else {
+		parts = append(parts, r.Name()+" api smoke test failed: "+err.Error())
+		failures = append(failures, r.Name()+" api smoke test: "+err.Error())
+	}
 	status := strings.Join(parts, "\n\n")
 	if len(failures) > 0 {
 		return status, fmt.Errorf("%s", strings.Join(failures, "; "))
 	}
 	return status, nil
+}
+
+func (r *Runner) smokeTest(ctx context.Context) (string, error) {
+	args := []string{
+		"--print",
+		"--output-format", "json",
+		"--permission-mode", "dontAsk",
+	}
+	args = r.appendBudgetArg(args)
+	if r.model != "" {
+		args = append(args, "--model", r.model)
+	}
+	args = append(args, "Return exactly OK. Do not use tools.")
+	out, err := r.runWithProvider(ctx, "", r.bin, args, "")
+	if err != nil {
+		return "", err
+	}
+	text, err := parseTextOutput(out)
+	if err != nil {
+		return "", err
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "OK", nil
+	}
+	return trimForError(text), nil
 }
 
 func (r *Runner) applyProvider(ctx context.Context) error {
@@ -262,6 +294,9 @@ func (r *Runner) run(ctx context.Context, dir, bin string, args []string, stdin 
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, fmt.Errorf("%s timed out after %s", bin, r.timeout)
 		}
+		if structuredErr := parseStructuredCLIError(stdout.Bytes(), r.Name()); structuredErr != nil {
+			return nil, structuredErr
+		}
 		msg := formatCommandFailure(stderr.String(), stdout.String())
 		if msg != "" {
 			return nil, fmt.Errorf("%s failed: %w: %s", bin, err, msg)
@@ -272,6 +307,10 @@ func (r *Runner) run(ctx context.Context, dir, bin string, args []string, stdin 
 }
 
 func parseReviewOutput(out []byte) (*model.ReviewResult, string, error) {
+	return parseReviewOutputForAgent(out, "claude")
+}
+
+func parseReviewOutputForAgent(out []byte, agent string) (*model.ReviewResult, string, error) {
 	var direct model.ReviewResult
 	if err := json.Unmarshal(bytes.TrimSpace(out), &direct); err == nil && (direct.Summary != "" || len(direct.Findings) > 0 || direct.OverallSeverity != "") {
 		return &direct, "", nil
@@ -283,33 +322,44 @@ func parseReviewOutput(out []byte) (*model.ReviewResult, string, error) {
 		APIErrorStatus int    `json:"api_error_status"`
 	}
 	if err := json.Unmarshal(bytes.TrimSpace(out), &wrapped); err != nil {
-		return nil, "", fmt.Errorf("claude review: parse output: %w", err)
+		return nil, "", fmt.Errorf("%s review: parse output: %w", agent, err)
 	}
 	if wrapped.IsError {
 		msg := resultMessage(wrapped.Result)
 		if wrapped.APIErrorStatus != 0 {
-			return nil, "", fmt.Errorf("claude api error %d: %s", wrapped.APIErrorStatus, msg)
+			return nil, "", fmt.Errorf("%s api error %d: %s", agent, wrapped.APIErrorStatus, msg)
 		}
-		return nil, "", fmt.Errorf("claude api error: %s", msg)
+		return nil, "", fmt.Errorf("%s api error: %s", agent, msg)
 	}
 	switch v := wrapped.Result.(type) {
 	case string:
 		v = strings.TrimSpace(v)
 		if v == "" {
-			return nil, "", fmt.Errorf("claude review: empty result string")
+			return nil, "", fmt.Errorf("%s review: empty result string", agent)
 		}
 		if err := json.Unmarshal([]byte(v), &direct); err != nil {
-			return nil, "", fmt.Errorf("claude review: parse result string: %w", err)
+			return nil, "", fmt.Errorf("%s review: parse result string: %w", agent, err)
 		}
 	case map[string]any:
 		data, _ := json.Marshal(v)
 		if err := json.Unmarshal(data, &direct); err != nil {
-			return nil, "", fmt.Errorf("claude review: parse result object: %w", err)
+			return nil, "", fmt.Errorf("%s review: parse result object: %w", agent, err)
 		}
 	default:
-		return nil, "", fmt.Errorf("claude review: missing structured result")
+		return nil, "", fmt.Errorf("%s review: missing structured result", agent)
 	}
 	return &direct, wrapped.SessionID, nil
+}
+
+func parseStructuredCLIError(out []byte, agent string) error {
+	_, _, err := parseReviewOutputForAgent(out, agent)
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(err.Error(), " api error") {
+		return err
+	}
+	return nil
 }
 
 func resultMessage(v any) string {
