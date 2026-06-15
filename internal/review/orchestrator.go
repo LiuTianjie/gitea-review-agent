@@ -1035,7 +1035,11 @@ func buildSummary(agent string, r *model.ReviewResult, unmapped []model.Finding)
 	b.WriteString("## ")
 	b.WriteString(reviewerDisplayName(agent))
 	b.WriteString(" 审查\n\n")
-	b.WriteString(r.Summary)
+	writeFindingsOverview(&b, r.Findings)
+	if strings.TrimSpace(r.Summary) != "" {
+		b.WriteString("\n### 总结\n\n")
+		b.WriteString(strings.TrimSpace(r.Summary))
+	}
 	b.WriteString(fmt.Sprintf("\n\n整体严重程度：**%s**\n", r.OverallSeverity))
 	if len(unmapped) > 0 {
 		b.WriteString("\n### 无法映射到 diff 行的问题\n\n")
@@ -1046,6 +1050,22 @@ func buildSummary(agent string, r *model.ReviewResult, unmapped []model.Finding)
 	}
 	b.WriteString("\n_仅静态审查，未构建或执行代码。_")
 	return b.String()
+}
+
+func writeFindingsOverview(b *strings.Builder, findings []model.Finding) {
+	b.WriteString("### 问题总览\n\n")
+	if len(findings) == 0 {
+		b.WriteString("未发现需要处理的问题。\n")
+		return
+	}
+	for _, f := range findings {
+		b.WriteString(fmt.Sprintf("- **[%s] %s** (`%s:%d`): %s\n",
+			strings.ToUpper(string(f.Severity)), strings.TrimSpace(f.Title), f.Path, f.Line, oneLine(f.Body)))
+	}
+}
+
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
 }
 
 func reviewerDisplayName(agent string) string {

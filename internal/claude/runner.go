@@ -580,6 +580,8 @@ Hard rules:
 - If a changed file looks safe, still consider whether its callers, migrations, API consumers, or persisted data contracts make the change risky.
 - Do not report pure style, readability, naming, formatting, or speculative maintainability feedback unless it creates a concrete bug risk.
 - Write all human-facing output in Simplified Chinese by default.
+- Summary, finding titles, and finding bodies MUST be Simplified Chinese. If you reasoned in English, translate the final structured output before returning.
+- The summary must start by naming the concrete problem areas a developer should fix; do not leave the actionable problem list only in inline findings.
 - For every finding include path, line, side, severity, title, body, and a tags array with zero to six short free-form tags.
 - Include resolved_fingerprints for prior findings that are clearly fixed.
 

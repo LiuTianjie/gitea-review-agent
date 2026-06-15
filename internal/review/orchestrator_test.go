@@ -261,6 +261,7 @@ type fakeGitea struct {
 	comments     []model.PullComment
 	commentCalls int
 	lastEvent    model.ReviewEventType
+	lastBody     string
 	lastComments []model.ReviewComment
 	dismissed    []int64
 	posted       []string
@@ -284,11 +285,12 @@ func (g *fakeGitea) ListIssueComments(context.Context, model.PRRef) ([]model.Pul
 	g.commentCalls++
 	return g.comments, nil
 }
-func (g *fakeGitea) PostReview(_ context.Context, _ model.PRRef, _ string, ev model.ReviewEventType, _ string, cs []model.ReviewComment) (int64, error) {
+func (g *fakeGitea) PostReview(_ context.Context, _ model.PRRef, _ string, ev model.ReviewEventType, body string, cs []model.ReviewComment) (int64, error) {
 	if g.postErr != nil {
 		return 0, g.postErr
 	}
 	g.lastEvent = ev
+	g.lastBody = body
 	g.lastComments = cs
 	g.reviews = append(g.reviews, ev)
 	g.reviewID++
@@ -495,6 +497,17 @@ func TestReview_Opened_InlineAndRequestChanges(t *testing.T) {
 	}
 	if len(gt.lastComments) != 1 || gt.lastComments[0].NewPosition != 19 {
 		t.Errorf("want 1 inline comment at line 19, got %+v", gt.lastComments)
+	}
+	for _, want := range []string{
+		"### 问题总览",
+		"**[HIGH] div by zero** (`calc.go:19`): boom",
+		"**[LOW] off diff** (`calc.go:999`): nope",
+		"### 总结",
+		"found stuff",
+	} {
+		if !strings.Contains(gt.lastBody, want) {
+			t.Fatalf("review body missing %q:\n%s", want, gt.lastBody)
+		}
 	}
 	// session persisted
 	if pull := st.pulls[pk(prEvent("opened", "x").PR)]; pull == nil || pull.SessionID != "thread-1" {

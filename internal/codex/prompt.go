@@ -8,7 +8,8 @@ import (
 const reviewLanguageInstruction = `Language rules:
 - Write all human-facing review output in Simplified Chinese by default, including summary, finding titles, finding bodies, and answers to /review questions.
 - Keep code, identifiers, file paths, command names, API names, error messages, and quoted source text in their original language.
-- Do not use English prose unless the user's question explicitly asks for English.`
+- Do not use English prose unless the user's question explicitly asks for English.
+- If your reasoning or tool output is in English, translate the final summary, finding titles, and finding bodies into Simplified Chinese before returning.`
 
 const reviewQualityInstruction = `Review process:
 - First list changed files with ` + "`git diff --name-only <base>...HEAD`" + ` and make sure every relevant changed file is considered.
@@ -57,7 +58,7 @@ For every concrete problem you find, emit a structured finding with:
 - tags: zero to six short free-form issue tags, such as "auth", "migration", "concurrency", "data-loss", or "error-handling"; always include this field, using an empty array when there are no tags.
 
 Also produce:
-- summary: an overall summary of the review.
+- summary: a Simplified Chinese overview that first names the problem areas a developer should fix, then briefly describes the overall review result. Do not leave the actionable problem list only in inline findings.
 - overall_severity: the highest-impact severity across all findings (none, low, medium, high, critical); use "none" when there are no findings.
 - resolved_fingerprints: include fingerprints for prior findings that are clearly fixed in the current diff; use an empty array when none are resolved or no prior findings are provided.
 
@@ -98,6 +99,7 @@ Compare against your previous review:
 - For prior findings that are clearly fixed, do NOT include them in findings; instead include their fingerprint in resolved_fingerprints and mention in the summary that they were resolved.
 - Report any remaining or newly introduced issues as fresh structured findings (path, line, side, severity, title, body).
 - Include a tags array on every finding, with zero to six short free-form tags to support aggregate reporting.
+- Keep summary, finding titles, and finding bodies in Simplified Chinese, and make the summary name the concrete problem areas a developer should fix.
 - Update overall_severity to reflect the current state (use "none" when no issues remain).
 
 Return ONLY the structured JSON result conforming to the provided output schema.`, baseRef)
