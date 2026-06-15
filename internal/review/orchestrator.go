@@ -1027,7 +1027,7 @@ func mapFindings(diff model.DiffMap, fs []model.Finding, agent string) (comments
 }
 
 func formatFinding(f model.Finding) string {
-	return fmt.Sprintf("**[%s] %s**\n\n%s", strings.ToUpper(string(f.Severity)), f.Title, f.Body)
+	return fmt.Sprintf("**[%s] %s**\n\n%s", severityLabel(f.Severity), f.Title, f.Body)
 }
 
 func buildSummary(agent string, r *model.ReviewResult, unmapped []model.Finding) string {
@@ -1040,12 +1040,12 @@ func buildSummary(agent string, r *model.ReviewResult, unmapped []model.Finding)
 		b.WriteString("\n### 总结\n\n")
 		b.WriteString(strings.TrimSpace(r.Summary))
 	}
-	b.WriteString(fmt.Sprintf("\n\n整体严重程度：**%s**\n", r.OverallSeverity))
+	b.WriteString(fmt.Sprintf("\n\n整体严重程度：**%s**\n", severityLabel(r.OverallSeverity)))
 	if len(unmapped) > 0 {
 		b.WriteString("\n### 无法映射到 diff 行的问题\n\n")
 		for _, f := range unmapped {
 			b.WriteString(fmt.Sprintf("- **[%s] %s** (`%s:%d`): %s\n",
-				strings.ToUpper(string(f.Severity)), f.Title, f.Path, f.Line, f.Body))
+				severityLabel(f.Severity), f.Title, f.Path, f.Line, f.Body))
 		}
 	}
 	b.WriteString("\n_仅静态审查，未构建或执行代码。_")
@@ -1060,12 +1060,34 @@ func writeFindingsOverview(b *strings.Builder, findings []model.Finding) {
 	}
 	for _, f := range findings {
 		b.WriteString(fmt.Sprintf("- **[%s] %s** (`%s:%d`): %s\n",
-			strings.ToUpper(string(f.Severity)), strings.TrimSpace(f.Title), f.Path, f.Line, oneLine(f.Body)))
+			severityLabel(f.Severity), strings.TrimSpace(f.Title), f.Path, f.Line, oneLine(f.Body)))
 	}
 }
 
 func oneLine(s string) string {
 	return strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
+}
+
+func severityLabel(severity model.Severity) string {
+	switch severity {
+	case model.SeverityCritical:
+		return "严重"
+	case model.SeverityHigh:
+		return "高"
+	case model.SeverityMedium:
+		return "中"
+	case model.SeverityLow:
+		return "低"
+	case model.SeverityInfo:
+		return "提示"
+	case "":
+		return "无"
+	default:
+		if strings.EqualFold(string(severity), "none") {
+			return "无"
+		}
+		return string(severity)
+	}
 }
 
 func reviewerDisplayName(agent string) string {

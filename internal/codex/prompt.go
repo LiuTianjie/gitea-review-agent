@@ -7,9 +7,11 @@ import (
 
 const reviewLanguageInstruction = `Language rules:
 - Write all human-facing review output in Simplified Chinese by default, including summary, finding titles, finding bodies, and answers to /review questions.
+- Inline review comments are generated from finding titles and finding bodies, so every finding title and body MUST be Simplified Chinese.
 - Keep code, identifiers, file paths, command names, API names, error messages, and quoted source text in their original language.
 - Do not use English prose unless the user's question explicitly asks for English.
-- If your reasoning or tool output is in English, translate the final summary, finding titles, and finding bodies into Simplified Chinese before returning.`
+- If your reasoning or tool output is in English, translate the final summary, finding titles, and finding bodies into Simplified Chinese before returning.
+- Do not return the structured JSON until summary, every finding title, and every finding body have been translated to Simplified Chinese.`
 
 const reviewQualityInstruction = `Review process:
 - First list changed files with ` + "`git diff --name-only <base>...HEAD`" + ` and make sure every relevant changed file is considered.
@@ -54,7 +56,8 @@ For every concrete problem you find, emit a structured finding with:
 - side: "NEW" for a line in the new/added version, "OLD" for a line in the old/removed version.
 - severity: one of info, low, medium, high, critical.
 - title: a short one-line summary of the issue.
-- body: a clear explanation of the problem and why it matters.
+- title must be Simplified Chinese.
+- body: a clear Simplified Chinese explanation of the problem and why it matters.
 - tags: zero to six short free-form issue tags, such as "auth", "migration", "concurrency", "data-loss", or "error-handling"; always include this field, using an empty array when there are no tags.
 
 Also produce:
@@ -100,6 +103,7 @@ Compare against your previous review:
 - Report any remaining or newly introduced issues as fresh structured findings (path, line, side, severity, title, body).
 - Include a tags array on every finding, with zero to six short free-form tags to support aggregate reporting.
 - Keep summary, finding titles, and finding bodies in Simplified Chinese, and make the summary name the concrete problem areas a developer should fix.
+- Because inline comments are generated from finding title/body, do not return until every finding title/body is Simplified Chinese.
 - Update overall_severity to reflect the current state (use "none" when no issues remain).
 
 Return ONLY the structured JSON result conforming to the provided output schema.`, baseRef)

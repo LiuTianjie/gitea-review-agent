@@ -498,12 +498,16 @@ func TestReview_Opened_InlineAndRequestChanges(t *testing.T) {
 	if len(gt.lastComments) != 1 || gt.lastComments[0].NewPosition != 19 {
 		t.Errorf("want 1 inline comment at line 19, got %+v", gt.lastComments)
 	}
+	if !strings.Contains(gt.lastComments[0].Body, "**[高] div by zero**") {
+		t.Fatalf("inline comment should use Chinese severity label:\n%s", gt.lastComments[0].Body)
+	}
 	for _, want := range []string{
 		"### 问题总览",
-		"**[HIGH] div by zero** (`calc.go:19`): boom",
-		"**[LOW] off diff** (`calc.go:999`): nope",
+		"**[高] div by zero** (`calc.go:19`): boom",
+		"**[低] off diff** (`calc.go:999`): nope",
 		"### 总结",
 		"found stuff",
+		"整体严重程度：**高**",
 	} {
 		if !strings.Contains(gt.lastBody, want) {
 			t.Fatalf("review body missing %q:\n%s", want, gt.lastBody)
