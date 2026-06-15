@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	_ "embed"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -117,6 +119,14 @@ func (r *Runner) Review(ctx context.Context, in model.CodexInput) (*model.Review
 	}
 	result, sessionID, err := parseReviewOutputForAgent(out, r.Name())
 	if err != nil {
+		if fallback, fallbackSessionID, fallbackErr := r.parseReviewResultFromSessionLog(out, in.Worktree); fallbackErr == nil {
+			if fallbackSessionID != "" {
+				fallback.SessionID = fallbackSessionID
+			} else {
+				fallback.SessionID = in.SessionID
+			}
+			return fallback, nil
+		}
 		return nil, err
 	}
 	if sessionID != "" {
@@ -310,17 +320,19 @@ func parseReviewOutput(out []byte) (*model.ReviewResult, string, error) {
 	return parseReviewOutputForAgent(out, "claude")
 }
 
+type cliResultEnvelope struct {
+	Result         any    `json:"result"`
+	SessionID      string `json:"session_id"`
+	IsError        bool   `json:"is_error"`
+	APIErrorStatus int    `json:"api_error_status"`
+}
+
 func parseReviewOutputForAgent(out []byte, agent string) (*model.ReviewResult, string, error) {
 	var direct model.ReviewResult
 	if err := json.Unmarshal(bytes.TrimSpace(out), &direct); err == nil && (direct.Summary != "" || len(direct.Findings) > 0 || direct.OverallSeverity != "") {
 		return &direct, "", nil
 	}
-	var wrapped struct {
-		Result         any    `json:"result"`
-		SessionID      string `json:"session_id"`
-		IsError        bool   `json:"is_error"`
-		APIErrorStatus int    `json:"api_error_status"`
-	}
+	var wrapped cliResultEnvelope
 	if err := json.Unmarshal(bytes.TrimSpace(out), &wrapped); err != nil {
 		return nil, "", fmt.Errorf("%s review: parse output: %w", agent, err)
 	}
@@ -349,6 +361,135 @@ func parseReviewOutputForAgent(out []byte, agent string) (*model.ReviewResult, s
 		return nil, "", fmt.Errorf("%s review: missing structured result", agent)
 	}
 	return &direct, wrapped.SessionID, nil
+}
+
+func (r *Runner) parseReviewResultFromSessionLog(out []byte, worktree string) (*model.ReviewResult, string, error) {
+	sessionID := sessionIDFromCLIOutput(out)
+	if sessionID == "" {
+		return nil, "", fmt.Errorf("%s review: session id missing", r.Name())
+	}
+	if strings.TrimSpace(r.claudeHome) == "" {
+		return nil, "", fmt.Errorf("%s review: claude home missing", r.Name())
+	}
+	result, err := findStructuredOutputInClaudeHome(r.claudeHome, worktree, sessionID)
+	if err != nil {
+		return nil, "", err
+	}
+	return result, sessionID, nil
+}
+
+func sessionIDFromCLIOutput(out []byte) string {
+	var wrapped cliResultEnvelope
+	if err := json.Unmarshal(bytes.TrimSpace(out), &wrapped); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(wrapped.SessionID)
+}
+
+func findStructuredOutputInClaudeHome(claudeHome, worktree, sessionID string) (*model.ReviewResult, error) {
+	projectsDir := filepath.Join(claudeHome, "projects")
+	var candidates []string
+	if worktree != "" {
+		projectDir := filepath.Join(projectsDir, claudeProjectDirName(worktree))
+		candidates = append(candidates, projectDir)
+	}
+	candidates = append(candidates, projectsDir)
+
+	var lastErr error
+	for _, root := range candidates {
+		result, err := findStructuredOutputInDir(root, sessionID)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("claude structured output not found for session %s", sessionID)
+}
+
+func claudeProjectDirName(worktree string) string {
+	name := filepath.ToSlash(filepath.Clean(worktree))
+	name = strings.ReplaceAll(name, "/", "-")
+	name = strings.ReplaceAll(name, "__", "--")
+	return name
+}
+
+func findStructuredOutputInDir(root, sessionID string) (*model.ReviewResult, error) {
+	info, err := os.Stat(root)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("%s is not a directory", root)
+	}
+
+	var latest *model.ReviewResult
+	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if filepath.Ext(path) != ".jsonl" {
+			return nil
+		}
+		result, err := structuredOutputFromClaudeJSONL(path, sessionID)
+		if err != nil {
+			return nil
+		}
+		if result != nil {
+			latest = result
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if latest == nil {
+		return nil, fmt.Errorf("claude structured output not found for session %s", sessionID)
+	}
+	return latest, nil
+}
+
+func structuredOutputFromClaudeJSONL(path, sessionID string) (*model.ReviewResult, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var latest *model.ReviewResult
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+	for scanner.Scan() {
+		var line struct {
+			SessionID  string `json:"sessionId"`
+			Attachment struct {
+				Type string          `json:"type"`
+				Data json.RawMessage `json:"data"`
+			} `json:"attachment"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
+			continue
+		}
+		if strings.TrimSpace(line.SessionID) != sessionID || line.Attachment.Type != "structured_output" || len(line.Attachment.Data) == 0 {
+			continue
+		}
+		var result model.ReviewResult
+		if err := json.Unmarshal(line.Attachment.Data, &result); err != nil {
+			continue
+		}
+		if result.Summary != "" || len(result.Findings) > 0 || result.OverallSeverity != "" {
+			latest = &result
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return latest, nil
 }
 
 func parseStructuredCLIError(out []byte, agent string) error {

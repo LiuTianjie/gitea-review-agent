@@ -215,6 +215,51 @@ func TestRunnerReviewCanUseDirectBaseURLWithoutProviderSwitch(t *testing.T) {
 	}
 }
 
+func TestRunnerReviewFallsBackToClaudeStructuredOutputLog(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "claude.log")
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "claude-stub.sh")
+	body := `#!/bin/sh
+{
+  echo "CWD=$(pwd)"
+  i=0
+  for a in "$@"; do
+    echo "ARG[$i]=$a"
+    i=$((i+1))
+  done
+} >> "$STUB_LOG"
+cat <<'JSON'
+{"type":"result","session_id":"session-from-stdout","result":"## Markdown review\n\nStructured output was provided separately."}
+JSON
+`
+	if err := os.WriteFile(bin, []byte(body), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv("STUB_LOG", logPath)
+
+	claudeHome := t.TempDir()
+	projectDir := filepath.Join(claudeHome, "projects", "some-project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	transcript := `{"sessionId":"session-from-stdout","attachment":{"type":"structured_output","data":{"summary":"from structured output","overall_severity":"medium","findings":[{"path":"src/app.go","line":12,"side":"NEW","severity":"medium","title":"real finding","body":"details","tags":["runtime"]}],"resolved_fingerprints":[]}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(projectDir, "session.jsonl"), []byte(transcript), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	r := New(Options{Name: "minimax", Bin: bin, ClaudeHome: claudeHome})
+	res, err := r.Review(context.Background(), model.CodexInput{Worktree: t.TempDir(), BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if res.SessionID != "session-from-stdout" || res.Summary != "from structured output" {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	if len(res.Findings) != 1 || res.Findings[0].Title != "real finding" {
+		t.Fatalf("findings not loaded from structured output: %+v", res.Findings)
+	}
+}
+
 func TestRunnerReviewTimeout(t *testing.T) {
 	bin := writeClaudeStub(t, filepath.Join(t.TempDir(), "claude.log"))
 	t.Setenv("STUB_SLEEP", "5")
