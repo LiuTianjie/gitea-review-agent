@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/turning4th/codex-gitea/internal/model"
 )
@@ -169,6 +170,37 @@ func TestRunner_ReviewNew(t *testing.T) {
 	// a new review must NOT be a resume.
 	if strings.Contains(log, "ARG[1]=resume") {
 		t.Errorf("new review incorrectly issued a resume; log:\n%s", log)
+	}
+}
+
+func TestRunner_ReviewSanitizesInvalidUTF8Prompt(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "stub.log")
+	writeStub(t, logPath)
+
+	invalidNote := "guidance: " + string([]byte{0xff, 0xfe}) + " done"
+	if utf8.ValidString(invalidNote) {
+		t.Fatal("test note unexpectedly valid UTF-8")
+	}
+
+	r := New(Options{CodexHome: t.TempDir()})
+	if _, err := r.Review(context.Background(), model.CodexInput{
+		Worktree: t.TempDir(),
+		BaseRef:  "main",
+		Note:     invalidNote,
+	}); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+
+	logb, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read stub log: %v", err)
+	}
+	log := string(logb)
+	if !utf8.ValidString(log) {
+		t.Fatalf("stub received invalid UTF-8:\n%x", logb)
+	}
+	if !strings.Contains(log, "guidance: \uFFFD done") {
+		t.Fatalf("prompt did not replace invalid UTF-8 bytes:\n%s", log)
 	}
 }
 

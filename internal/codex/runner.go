@@ -163,6 +163,7 @@ func (r *Runner) Review(ctx context.Context, in model.CodexInput) (*model.Review
 		prompt = buildResumePrompt(in.BaseRef, in.Note)
 		args = append([]string{"exec", "resume", in.SessionID, "-"}, r.reviewBaseArgs(schemaPath, outPath)...)
 	}
+	prompt = validUTF8Prompt(prompt)
 
 	stream, err := r.run(ctx, in.Worktree, args, prompt)
 	if err != nil {
@@ -201,7 +202,7 @@ func (r *Runner) Ask(ctx context.Context, sessionID, worktree, question string) 
 	if sessionID == "" {
 		return "", fmt.Errorf("codex ask: empty session id")
 	}
-	prompt := buildAskPrompt(question)
+	prompt := validUTF8Prompt(buildAskPrompt(question))
 	args := []string{
 		"exec", "resume", sessionID, "-",
 		"--json",
@@ -225,6 +226,10 @@ func (r *Runner) Ask(ctx context.Context, sessionID, worktree, question string) 
 		return "", fmt.Errorf("codex ask: no agent message in response")
 	}
 	return humanizeStructuredAnswer(sr.LastAgentMessage), nil
+}
+
+func validUTF8Prompt(prompt string) string {
+	return strings.ToValidUTF8(prompt, "\uFFFD")
 }
 
 // Status reports codex auth state by running `codex login status`.
