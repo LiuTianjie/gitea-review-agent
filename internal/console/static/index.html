@@ -170,6 +170,8 @@
   button:hover { background: var(--black-hover); border-color: var(--black-hover); transform: translateY(-1px); }
   button.secondary { background: #fff; color: var(--text); border-color: var(--line-strong); }
   button.secondary:hover { background: var(--panel-subtle); border-color: var(--black); }
+  button.danger { background: #fff; color: var(--red); border-color: #ffd5cf; }
+  button.danger:hover { background: var(--red-bg); border-color: var(--red); }
   button:disabled {
     cursor: not-allowed;
     opacity: .46;
@@ -350,6 +352,7 @@
   .s-running { background: var(--blue-bg); color: var(--blue); border-color: #cfe1ff; }
   .s-pending { background: var(--yellow-bg); color: var(--yellow); border-color: #f3df9c; }
   .s-superseded { background: var(--gray-bg); color: #525252; border-color: var(--line-strong); }
+  .s-canceled { background: var(--gray-bg); color: #525252; border-color: var(--line-strong); }
   code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
   pre.log {
     margin: 0 0 8px;
@@ -1154,6 +1157,10 @@
     var st = esc(j.status);
     var pr = esc(j.owner) + "/" + esc(j.repo) + "#" + esc(j.number);
     var retryInfo = j.next_attempt_at ? prettyTime(j.next_attempt_at) : (j.retryable ? "可重试" : "-");
+    var actionButtons = "<button class='secondary' id='rerunJobBtn' type='button'>重新运行</button>";
+    if (j.status === "pending") {
+      actionButtons = "<button class='danger' id='cancelJobBtn' type='button'>取消</button> " + actionButtons;
+    }
     var logs = [];
     if (j.error) logs.push({stage: "error", message: j.error, created_at: j.finished_at || j.started_at || j.created_at});
     (j.logs || []).forEach(function(l){ logs.push(l); });
@@ -1175,7 +1182,7 @@
     $("jobDetail").innerHTML =
       "<div class='detail-head'><div><h3 class='detail-title'>任务 #" + esc(j.id) + "</h3>" +
       "<p class='detail-subtitle'>" + pr + "</p></div><div><span class='badge s-" + st + "'>" + st + "</span> " +
-      "<button class='secondary' id='rerunJobBtn' type='button'>重新运行</button></div></div>" +
+      actionButtons + "</div></div>" +
       "<div class='detail-grid'>" +
       "<div class='metric'><span>事件</span><strong>" + esc(j.event || "-") + "</strong></div>" +
       "<div class='metric'><span>动作</span><strong>" + esc(j.action || "-") + "</strong></div>" +
@@ -1187,6 +1194,7 @@
       "<div class='metric'><span>开始</span><strong>" + esc(prettyTime(j.started_at) || "-") + "</strong></div>" +
       "</div><div class='msg' id='jobActionMsg'></div><h2>日志详情</h2><div class='timeline'>" + timeline + "</div>";
     $("rerunJobBtn").addEventListener("click", function(){ rerunJob(j.id); });
+    if ($("cancelJobBtn")) $("cancelJobBtn").addEventListener("click", function(){ cancelJob(j.id); });
   }
 
   function rerunJob(id){
@@ -1206,6 +1214,34 @@
       });
     }).catch(function(e){
       show($("jobActionMsg"), "重跑失败：" + requestErrorText(e), false);
+    });
+  }
+
+  function cancelJob(id){
+    if (!id) return;
+    if (!confirm("取消这个 pending 任务？")) return;
+    var btn = $("cancelJobBtn");
+    if (btn) btn.disabled = true;
+    fetch("/admin/api/jobs/" + encodeURIComponent(id) + "/cancel", {method: "POST"}).then(function(r){
+      return r.json().then(function(b){ return {ok:r.ok, b:b}; });
+    }).then(function(res){
+      if (!res.ok) throw new Error(res.b.error || "cancel failed");
+      var job = res.b.job;
+      if (job && job.id) {
+        jobDetailCache[job.id] = job;
+        for (var i = 0; i < jobCache.length; i++) {
+          if (String(jobCache[i].id) === String(job.id)) jobCache[i] = Object.assign({}, jobCache[i], job);
+        }
+        renderJobs();
+        renderJobDetail(job);
+        show($("jobActionMsg"), "已取消任务 #" + job.id, true);
+      }
+      refreshJobsAndStats().then(function(){
+        if (selectedJobID) selectJob(selectedJobID, true);
+      });
+    }).catch(function(e){
+      if (btn) btn.disabled = false;
+      show($("jobActionMsg"), "取消失败：" + requestErrorText(e), false);
     });
   }
 

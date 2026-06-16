@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"time"
 )
 
@@ -63,7 +64,10 @@ const (
 	JobDone       JobStatus = "done"
 	JobFailed     JobStatus = "failed"
 	JobSuperseded JobStatus = "superseded"
+	JobCanceled   JobStatus = "canceled"
 )
+
+var ErrJobNotPending = errors.New("job is not pending")
 
 // ErrorType classifies failed work so the console can distinguish retryable
 // provider/network problems from configuration or auth issues.
@@ -355,6 +359,7 @@ type JobStats struct {
 	Running      int
 	Pending      int
 	Superseded   int
+	Canceled     int
 }
 
 // JobFilter constrains console job history queries.
@@ -442,6 +447,7 @@ type Store interface {
 	FinishJob(ctx context.Context, id int64, status JobStatus, errMsg string) error
 	FinishJobDetailed(ctx context.Context, id int64, finish JobFinish) error
 	RerunJob(ctx context.Context, id int64) (*Job, error)
+	CancelPendingJob(ctx context.Context, id int64) (*Job, error)
 	RecoverRunning(ctx context.Context) error // running -> pending on boot
 	AppendJobLog(ctx context.Context, jobID int64, stage, message string) error
 	ListJobs(ctx context.Context, limit, offset int) ([]JobView, error)

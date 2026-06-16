@@ -189,6 +189,39 @@ func (s *Store) RerunJob(ctx context.Context, id int64) (*model.Job, error) {
 	return scanJob(ctx, s.db, newID)
 }
 
+// CancelPendingJob marks a queued job as canceled. Jobs that have already been
+// claimed are left alone so an in-flight review is not orphaned by the console.
+func (s *Store) CancelPendingJob(ctx context.Context, id int64) (*model.Job, error) {
+	now := nowRFC3339()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE jobs
+		 SET status=?, error='', error_type='', retryable=0, next_attempt_at='',
+		     started_at=NULL, finished_at=?
+		 WHERE id=? AND status=?`,
+		string(model.JobCanceled), now, id, string(model.JobPending))
+	if err != nil {
+		return nil, fmt.Errorf("cancel pending job: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("cancel pending job rows affected: %w", err)
+	}
+	if affected == 0 {
+		job, err := scanJob(ctx, s.db, id)
+		if err != nil {
+			return nil, err
+		}
+		if job.Status != model.JobPending {
+			return nil, model.ErrJobNotPending
+		}
+		return nil, fmt.Errorf("cancel pending job: no rows updated")
+	}
+	if err := s.AppendJobLog(ctx, id, "admin", "canceled pending job"); err != nil {
+		return nil, err
+	}
+	return scanJob(ctx, s.db, id)
+}
+
 // AppendJobLog adds a progress entry visible in the admin console.
 func (s *Store) AppendJobLog(ctx context.Context, jobID int64, stage, message string) error {
 	_, err := s.db.ExecContext(ctx,
@@ -370,6 +403,8 @@ func (s *Store) JobStatsFiltered(ctx context.Context, filter model.JobFilter) (m
 			stats.Pending += n
 		case string(model.JobSuperseded):
 			stats.Superseded += n
+		case string(model.JobCanceled):
+			stats.Canceled += n
 		}
 	}
 	if err := rows.Err(); err != nil {

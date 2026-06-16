@@ -103,6 +103,7 @@ func (c *Console) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/api/jobs/stats", c.handleJobStats)
 	mux.HandleFunc("GET /admin/api/jobs/{id}", c.handleJobDetail)
 	mux.HandleFunc("POST /admin/api/jobs/{id}/rerun", c.handleJobRerun)
+	mux.HandleFunc("POST /admin/api/jobs/{id}/cancel", c.handleJobCancel)
 	mux.HandleFunc("POST /admin/api/analytics/reports", c.handleCreateAnalysisReport)
 	mux.HandleFunc("GET /admin/api/analytics/reports/latest", c.handleLatestAnalysisReport)
 	mux.HandleFunc("GET /admin/api/analytics/reports", c.handleListAnalysisReports)
@@ -359,6 +360,7 @@ type jobStatsView struct {
 	Running      int     `json:"running"`
 	Pending      int     `json:"pending"`
 	Superseded   int     `json:"superseded"`
+	Canceled     int     `json:"canceled"`
 	SuccessRate  float64 `json:"success_rate"`
 }
 
@@ -463,6 +465,36 @@ func (c *Console) handleJobRerun(w http.ResponseWriter, r *http.Request) {
 	})})
 }
 
+func (c *Console) handleJobCancel(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := c.store.CancelPendingJob(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "job not found")
+			return
+		}
+		if errors.Is(err, model.ErrJobNotPending) {
+			writeError(w, http.StatusConflict, "job is not pending")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job": toJobView(model.JobView{
+		ID: job.ID, PR: job.PR, Event: job.Event, Action: job.Action, Status: job.Status,
+		Attempts: job.Attempts, Error: job.Error, ErrorType: job.ErrorType, Retryable: job.Retryable,
+		CreatedAt: job.CreatedAt, StartedAt: job.StartedAt, FinishedAt: job.FinishedAt,
+		NextAttemptAt: job.NextAttemptAt,
+	})})
+}
+
 func toJobView(j model.JobView) jobView {
 	jv := jobView{
 		ID:        j.ID,
@@ -522,6 +554,7 @@ func toJobStatsView(stats model.JobStats) jobStatsView {
 		Running:      stats.Running,
 		Pending:      stats.Pending,
 		Superseded:   stats.Superseded,
+		Canceled:     stats.Canceled,
 		SuccessRate:  successRate,
 	}
 }

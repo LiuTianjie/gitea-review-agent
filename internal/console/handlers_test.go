@@ -470,6 +470,54 @@ func TestJobsEndpoint(t *testing.T) {
 	if !rerun.OK || rerun.Job.ID == job.ID || rerun.Job.Status != string(model.JobPending) {
 		t.Fatalf("rerun response = %+v, original=%d", rerun, job.ID)
 	}
+
+	w = do(t, h, "POST", "/admin/api/jobs/"+strconv.FormatInt(job.ID, 10)+"/cancel", "", true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("job cancel: code = %d body=%s", w.Code, w.Body.String())
+	}
+	var canceled struct {
+		OK  bool `json:"ok"`
+		Job struct {
+			ID     int64  `json:"id"`
+			Status string `json:"status"`
+		} `json:"job"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &canceled); err != nil {
+		t.Fatalf("decode cancel: %v", err)
+	}
+	if !canceled.OK || canceled.Job.ID != job.ID || canceled.Job.Status != string(model.JobCanceled) {
+		t.Fatalf("cancel response = %+v, want canceled original job", canceled)
+	}
+
+	running, _, err := c.store.EnqueueJob(context.Background(), &model.WebhookEvent{
+		DeliveryID: "console-job-running",
+		Event:      model.EventPullRequest,
+		Action:     "opened",
+		PR:         model.PRRef{Owner: "acme", Repo: "widgets", Number: 18},
+		Raw:        []byte(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("enqueue running job: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		claimed, err := c.store.ClaimJob(context.Background())
+		if err != nil {
+			t.Fatalf("claim running job: %v", err)
+		}
+		if claimed == nil {
+			t.Fatalf("claim running job: got nil before job %d", running.ID)
+		}
+		if claimed.ID == running.ID {
+			break
+		}
+		if i == 2 {
+			t.Fatalf("claim running job: never claimed job %d", running.ID)
+		}
+	}
+	w = do(t, h, "POST", "/admin/api/jobs/"+strconv.FormatInt(running.ID, 10)+"/cancel", "", true)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("cancel running job: code = %d body=%s, want 409", w.Code, w.Body.String())
+	}
 }
 
 func TestAnalyticsReportEndpoints(t *testing.T) {

@@ -172,6 +172,7 @@ func (s *fakeStore) ClaimJob(context.Context) (*model.Job, error)               
 func (s *fakeStore) FinishJob(context.Context, int64, model.JobStatus, string) error { return nil }
 func (s *fakeStore) FinishJobDetailed(context.Context, int64, model.JobFinish) error { return nil }
 func (s *fakeStore) RerunJob(context.Context, int64) (*model.Job, error)             { return nil, nil }
+func (s *fakeStore) CancelPendingJob(context.Context, int64) (*model.Job, error)     { return nil, nil }
 func (s *fakeStore) RecoverRunning(context.Context) error                            { return nil }
 func (s *fakeStore) AppendJobLog(context.Context, int64, string, string) error       { return nil }
 func (s *fakeStore) ListJobs(context.Context, int, int) ([]model.JobView, error)     { return nil, nil }

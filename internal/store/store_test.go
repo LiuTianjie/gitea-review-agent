@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -221,6 +222,74 @@ func TestFinishJobDetailedSchedulesRetry(t *testing.T) {
 	due, err := st.ClaimJob(ctx)
 	if err != nil || due == nil || due.ID != job.ID {
 		t.Fatalf("due retry claim = %+v err=%v", due, err)
+	}
+}
+
+func TestCancelPendingJob(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	job, _, err := st.EnqueueJob(ctx, sampleEvent("d-cancel"))
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	canceled, err := st.CancelPendingJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("CancelPendingJob: %v", err)
+	}
+	if canceled.Status != model.JobCanceled {
+		t.Fatalf("canceled status=%q, want canceled", canceled.Status)
+	}
+	if canceled.FinishedAt == nil {
+		t.Fatalf("canceled finished_at not set")
+	}
+	next, err := st.ClaimJob(ctx)
+	if err != nil {
+		t.Fatalf("ClaimJob after cancel: %v", err)
+	}
+	if next != nil {
+		t.Fatalf("ClaimJob after cancel = %+v, want nil", next)
+	}
+	detail, err := st.GetJobView(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetJobView: %v", err)
+	}
+	if detail.LogCount != 1 || len(detail.Logs) != 1 || detail.Logs[0].Stage != "admin" {
+		t.Fatalf("cancel logs = count %d logs %+v, want admin cancel log", detail.LogCount, detail.Logs)
+	}
+	stats, err := st.JobStats(ctx)
+	if err != nil {
+		t.Fatalf("JobStats: %v", err)
+	}
+	if stats.Pending != 0 || stats.Canceled != 1 {
+		t.Fatalf("JobStats after cancel = %+v, want pending=0 canceled=1", stats)
+	}
+}
+
+func TestCancelPendingJobRejectsRunning(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	job, _, err := st.EnqueueJob(ctx, sampleEvent("d-cancel-running"))
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	claimed, err := st.ClaimJob(ctx)
+	if err != nil {
+		t.Fatalf("ClaimJob: %v", err)
+	}
+	if claimed.ID != job.ID {
+		t.Fatalf("claimed id=%d, want %d", claimed.ID, job.ID)
+	}
+	if _, err := st.CancelPendingJob(ctx, job.ID); !errors.Is(err, model.ErrJobNotPending) {
+		t.Fatalf("CancelPendingJob running err=%v, want ErrJobNotPending", err)
+	}
+	got, err := st.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Status != model.JobRunning {
+		t.Fatalf("running job status=%q, want running", got.Status)
 	}
 }
 
