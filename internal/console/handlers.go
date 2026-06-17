@@ -600,6 +600,8 @@ type analysisReportView struct {
 }
 
 type analysisTrendPointView struct {
+	Bucket               string  `json:"bucket"`
+	Interval             string  `json:"interval"`
 	Day                  string  `json:"day"`
 	FinishedAt           string  `json:"finished_at"`
 	TotalReviewRuns      int     `json:"total_review_runs"`
@@ -654,7 +656,8 @@ func (c *Console) handleListAnalysisReports(w http.ResponseWriter, r *http.Reque
 
 func (c *Console) handleAnalysisTrend(w http.ResponseWriter, r *http.Request) {
 	limit := parsePositiveInt(r.URL.Query().Get("limit"), 12)
-	points, err := c.store.BuildAnalysisTrend(r.Context(), limit)
+	interval := r.URL.Query().Get("interval")
+	points, err := c.store.BuildAnalysisTrend(r.Context(), limit, interval)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -662,6 +665,7 @@ func (c *Console) handleAnalysisTrend(w http.ResponseWriter, r *http.Request) {
 	out := make([]analysisTrendPointView, 0, len(points))
 	for _, point := range points {
 		item := analysisTrendPointView{
+			Bucket: point.Bucket, Interval: point.Interval,
 			Day: point.Day, TotalReviewRuns: point.TotalReviewRuns, SuccessfulReviewRuns: point.SuccessfulReviewRuns,
 			FailedReviewRuns: point.FailedReviewRuns, SuccessRate: point.SuccessRate,
 			TotalFindings: point.TotalFindings, OpenFindings: point.OpenFindings,

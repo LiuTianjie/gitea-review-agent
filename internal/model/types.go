@@ -380,6 +380,8 @@ type AnalysisReport struct {
 }
 
 type AnalysisTrendPoint struct {
+	Bucket               string    `json:"bucket"`
+	Interval             string    `json:"interval"`
 	Day                  string    `json:"day"`
 	FinishedAt           time.Time `json:"finished_at"`
 	TotalReviewRuns      int       `json:"total_review_runs"`
@@ -566,7 +568,7 @@ type Store interface {
 	LatestAnalysisReport(ctx context.Context) (*AnalysisReport, error)
 	ListAnalysisReports(ctx context.Context, limit int) ([]AnalysisReport, error)
 	BuildAnalysisSummary(ctx context.Context) (AnalysisSummary, error)
-	BuildAnalysisTrend(ctx context.Context, limit int) ([]AnalysisTrendPoint, error)
+	BuildAnalysisTrend(ctx context.Context, limit int, interval string) ([]AnalysisTrendPoint, error)
 	ListProjectSkillSummaries(ctx context.Context) ([]ProjectSkillSummary, error)
 	GetProjectSkill(ctx context.Context, owner, repo string) (*ProjectSkill, error)
 	UpsertProjectSkill(ctx context.Context, skill *ProjectSkill) error

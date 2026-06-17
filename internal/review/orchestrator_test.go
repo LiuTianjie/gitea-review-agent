@@ -214,7 +214,7 @@ func (s *fakeStore) ListAnalysisReports(context.Context, int) ([]model.AnalysisR
 func (s *fakeStore) BuildAnalysisSummary(context.Context) (model.AnalysisSummary, error) {
 	return model.AnalysisSummary{}, nil
 }
-func (s *fakeStore) BuildAnalysisTrend(context.Context, int) ([]model.AnalysisTrendPoint, error) {
+func (s *fakeStore) BuildAnalysisTrend(context.Context, int, string) ([]model.AnalysisTrendPoint, error) {
 	return nil, nil
 }
 func (s *fakeStore) ListProjectSkillSummaries(context.Context) ([]model.ProjectSkillSummary, error) {

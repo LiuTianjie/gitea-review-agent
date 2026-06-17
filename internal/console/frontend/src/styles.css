@@ -733,6 +733,41 @@ h3 {
   gap: 16px;
 }
 
+.trend-wrap {
+  margin-top: 16px;
+}
+
+.segmented-control {
+  display: inline-flex;
+  gap: 3px;
+  padding: 4px;
+  border: 1px solid #deded9;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 1px 2px rgba(20, 20, 20, 0.05);
+}
+
+.trend-wrap > .segmented-control,
+.trend-section > .segmented-control {
+  margin-bottom: 12px;
+}
+
+.segmented-control button {
+  min-width: 42px;
+  height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #666;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.segmented-control button.active {
+  background: #151515;
+  color: #fff;
+}
+
 .chart-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

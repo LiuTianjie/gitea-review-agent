@@ -1228,21 +1228,67 @@ func TestBuildAnalysisTrendBucketsReviewRunDataByDay(t *testing.T) {
 		t.Fatalf("backdate run3: %v", err)
 	}
 
-	points, err := st.BuildAnalysisTrend(ctx, 12)
+	run4 := &model.ReviewRun{PullID: pull.ID, Agent: "codex", HeadSHA: "sha4"}
+	if err := st.CreateReviewRun(ctx, run4); err != nil {
+		t.Fatalf("CreateReviewRun run4: %v", err)
+	}
+	if err := st.FinishReviewRun(ctx, run4.ID, model.ReviewRunDone, "", 0); err != nil {
+		t.Fatalf("FinishReviewRun run4: %v", err)
+	}
+	if _, err := st.db.Exec(`UPDATE review_runs SET finished_at='2026-07-02T01:00:00Z' WHERE id=?`, run4.ID); err != nil {
+		t.Fatalf("backdate run4: %v", err)
+	}
+
+	points, err := st.BuildAnalysisTrend(ctx, 12, "day")
 	if err != nil {
 		t.Fatalf("BuildAnalysisTrend: %v", err)
 	}
-	if len(points) != 2 {
-		t.Fatalf("trend len = %d, want 2: %+v", len(points), points)
+	if len(points) != 3 {
+		t.Fatalf("trend len = %d, want 3: %+v", len(points), points)
 	}
-	if points[0].Day != "2026-06-17" || points[0].TotalReviewRuns != 2 || points[0].SuccessfulReviewRuns != 1 ||
+	if points[0].Bucket != "2026-06-17" || points[0].Interval != "day" ||
+		points[0].TotalReviewRuns != 2 || points[0].SuccessfulReviewRuns != 1 ||
 		points[0].FailedReviewRuns != 1 || points[0].SuccessRate != 0.5 ||
 		points[0].TotalFindings != 1 || points[0].OpenFindings != 1 || points[0].HighCriticalOpen != 1 {
 		t.Fatalf("first daily trend point mismatch: %+v", points[0])
 	}
-	if points[1].Day != "2026-06-18" || points[1].TotalReviewRuns != 1 ||
+	if points[1].Bucket != "2026-06-18" || points[1].TotalReviewRuns != 1 ||
 		points[1].SuccessfulReviewRuns != 1 || points[1].TotalFindings != 0 {
 		t.Fatalf("second daily trend point mismatch: %+v", points[1])
+	}
+	if points[2].Bucket != "2026-07-02" || points[2].TotalReviewRuns != 1 {
+		t.Fatalf("third daily trend point mismatch: %+v", points[2])
+	}
+
+	weekly, err := st.BuildAnalysisTrend(ctx, 12, "week")
+	if err != nil {
+		t.Fatalf("BuildAnalysisTrend week: %v", err)
+	}
+	if len(weekly) != 2 {
+		t.Fatalf("weekly len = %d, want 2: %+v", len(weekly), weekly)
+	}
+	if weekly[0].Bucket != "2026-06-15" || weekly[0].Interval != "week" ||
+		weekly[0].TotalReviewRuns != 3 || weekly[0].SuccessfulReviewRuns != 2 ||
+		weekly[0].FailedReviewRuns != 1 || weekly[0].TotalFindings != 1 {
+		t.Fatalf("weekly trend point mismatch: %+v", weekly[0])
+	}
+	if weekly[1].Bucket != "2026-06-29" || weekly[1].TotalReviewRuns != 1 {
+		t.Fatalf("second weekly trend point mismatch: %+v", weekly[1])
+	}
+
+	monthly, err := st.BuildAnalysisTrend(ctx, 12, "month")
+	if err != nil {
+		t.Fatalf("BuildAnalysisTrend month: %v", err)
+	}
+	if len(monthly) != 2 {
+		t.Fatalf("monthly len = %d, want 2: %+v", len(monthly), monthly)
+	}
+	if monthly[0].Bucket != "2026-06" || monthly[0].Interval != "month" ||
+		monthly[0].TotalReviewRuns != 3 || monthly[0].TotalFindings != 1 {
+		t.Fatalf("monthly trend point mismatch: %+v", monthly[0])
+	}
+	if monthly[1].Bucket != "2026-07" || monthly[1].TotalReviewRuns != 1 {
+		t.Fatalf("second monthly trend point mismatch: %+v", monthly[1])
 	}
 }
 

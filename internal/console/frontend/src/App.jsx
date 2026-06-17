@@ -714,14 +714,17 @@ function SkillsPanel() {
 function AnalyticsPanel() {
   const [report, setReport] = useState(null)
   const [trend, setTrend] = useState([])
+  const [trendInterval, setTrendInterval] = useState('day')
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState(null)
+
+  const trendLimit = trendInterval === 'day' ? 14 : 12
 
   const loadLatest = useCallback(async () => {
     try {
       const [latestPayload, trendPayload] = await Promise.all([
         fetchJSON('/admin/api/analytics/reports/latest', {}, 10000),
-        fetchJSON('/admin/api/analytics/trend?limit=14', {}, 10000)
+        fetchJSON(`/admin/api/analytics/trend?interval=${encodeURIComponent(trendInterval)}&limit=${trendLimit}`, {}, 10000)
       ])
       setReport(latestPayload.report || null)
       setTrend(trendPayload.points || [])
@@ -729,7 +732,7 @@ function AnalyticsPanel() {
     } catch (error) {
       setMessage({ ok: false, text: `加载失败：${error.message}` })
     }
-  }, [])
+  }, [trendInterval, trendLimit])
 
   useEffect(() => {
     loadLatest()
@@ -741,7 +744,7 @@ function AnalyticsPanel() {
     try {
       const payload = await fetchJSON('/admin/api/analytics/reports', { method: 'POST' }, 30000)
       setReport(payload.report || null)
-      const trendPayload = await fetchJSON('/admin/api/analytics/trend?limit=14', {}, 10000)
+      const trendPayload = await fetchJSON(`/admin/api/analytics/trend?interval=${encodeURIComponent(trendInterval)}&limit=${trendLimit}`, {}, 10000)
       setTrend(trendPayload.points || [])
       setMessage({ ok: true, text: '分析报告已生成' })
     } catch (error) {
@@ -764,12 +767,12 @@ function AnalyticsPanel() {
         </div>
       </div>
       <Message message={message} />
-      <AnalysisReport report={report} trend={trend} />
+      <AnalysisReport report={report} trend={trend} trendInterval={trendInterval} setTrendInterval={setTrendInterval} />
     </section>
   )
 }
 
-function AnalysisReport({ report, trend = [] }) {
+function AnalysisReport({ report, trend = [], trendInterval = 'day', setTrendInterval }) {
   if (!report) return <div className="empty-state">点击“生成分析报告”后查看全量历史聚合。</div>
   const summary = report.summary || {}
   const completed = (summary.successful_review_runs || 0) + (summary.failed_review_runs || 0)
@@ -796,7 +799,7 @@ function AnalysisReport({ report, trend = [] }) {
         <StatCard label="已修复" value={summary.fixed_findings || 0} hint="fixed" />
       </div>
 
-      <TrendOverview points={trend} />
+      <TrendOverview points={trend} interval={trendInterval} onIntervalChange={setTrendInterval} />
 
       <div className="chart-grid">
         <BarChartBlock title="按严重度" label="Risk" items={severityChart} empty="暂无严重度数据" tone="risk" />
@@ -862,25 +865,28 @@ function AnalysisReport({ report, trend = [] }) {
   )
 }
 
-function TrendOverview({ points }) {
+function TrendOverview({ points, interval = 'day', onIntervalChange }) {
   const history = [...(points || [])].filter((item) => item?.day || item?.finished_at)
+  const intervalLabel = { day: '天', week: '周', month: '月' }[interval] || '天'
+  const intervalText = { day: '按天聚合', week: '按周聚合', month: '按月聚合' }[interval] || '按天聚合'
   if (history.length < 1) {
     return (
       <section className="subsection trend-section">
         <div className="subsection-title">
           <h3>趋势</h3>
-          <span>按天聚合</span>
+          <span>{intervalText}</span>
         </div>
-        <div className="empty-state compact">产生 review 数据后，这里会展示按天趋势。</div>
+        <TrendIntervalControl value={interval} onChange={onIntervalChange} />
+        <div className="empty-state compact">产生 review 数据后，这里会展示{intervalText}趋势。</div>
       </section>
     )
   }
 
   const chartPoints = history.map((item, index) => {
-    const day = item.day || prettyTime(item.finished_at).slice(0, 10)
-    const label = day.length >= 10 ? day.slice(5, 10) : day
+    const bucket = item.bucket || item.day || prettyTime(item.finished_at).slice(0, 10)
+    const label = formatTrendBucket(bucket, item.interval || interval)
     return {
-      id: `${day}-${index}`,
+      id: `${bucket}-${index}`,
       label,
       total: item.total_findings || 0,
       open: item.open_findings || 0,
@@ -890,28 +896,65 @@ function TrendOverview({ points }) {
   })
 
   return (
-    <div className="trend-grid">
-      <LineChart
-        title="问题趋势"
-        subtitle={`${chartPoints[0].label} -> ${chartPoints[chartPoints.length - 1].label}`}
-        points={chartPoints}
-        series={[
-          { key: 'total', label: '问题总数', color: '#315f7d' },
-          { key: 'open', label: 'Open', color: '#9b5b2a' },
-          { key: 'severe', label: '严重 Open', color: '#9a3333' }
-        ]}
-      />
-      <LineChart
-        title="Review 成功率趋势"
-        subtitle={`最近 ${chartPoints.length} 天`}
-        points={chartPoints}
-        valueSuffix="%"
-        series={[
-          { key: 'success', label: '成功率', color: '#2f6f55' }
-        ]}
-      />
+    <div className="trend-wrap">
+      <TrendIntervalControl value={interval} onChange={onIntervalChange} />
+      <div className="trend-grid">
+        <LineChart
+          title="问题趋势"
+          subtitle={`${chartPoints[0].label} -> ${chartPoints[chartPoints.length - 1].label}`}
+          points={chartPoints}
+          series={[
+            { key: 'total', label: '问题总数', color: '#315f7d' },
+            { key: 'open', label: 'Open', color: '#9b5b2a' },
+            { key: 'severe', label: '严重 Open', color: '#9a3333' }
+          ]}
+        />
+        <LineChart
+          title="Review 成功率趋势"
+          subtitle={`最近 ${chartPoints.length} ${intervalLabel}`}
+          points={chartPoints}
+          valueSuffix="%"
+          series={[
+            { key: 'success', label: '成功率', color: '#2f6f55' }
+          ]}
+        />
+      </div>
     </div>
   )
+}
+
+function TrendIntervalControl({ value, onChange }) {
+  const options = [
+    { value: 'day', label: '日' },
+    { value: 'week', label: '周' },
+    { value: 'month', label: '月' }
+  ]
+  return (
+    <div className="segmented-control" aria-label="趋势维度">
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          className={value === option.value ? 'active' : ''}
+          onClick={() => onChange?.(option.value)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function formatTrendBucket(bucket, interval) {
+  if (!bucket) return ''
+  if (interval === 'month') {
+    const [year, month] = bucket.split('-')
+    return year && month ? `${year}-${month}` : bucket
+  }
+  if (bucket.length >= 10) {
+    return bucket.slice(5, 10)
+  }
+  return bucket
 }
 
 function LineChart({ title, subtitle, points, series, valueSuffix = '' }) {

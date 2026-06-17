@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/turning4th/codex-gitea/internal/model"
 )
@@ -59,38 +60,40 @@ func (s *Store) ListAnalysisReports(ctx context.Context, limit int) ([]model.Ana
 	return scanAnalysisReports(rows)
 }
 
-func (s *Store) BuildAnalysisTrend(ctx context.Context, limit int) ([]model.AnalysisTrendPoint, error) {
+func (s *Store) BuildAnalysisTrend(ctx context.Context, limit int, interval string) ([]model.AnalysisTrendPoint, error) {
+	interval = normalizeTrendInterval(interval)
 	if limit <= 0 || limit > 100 {
-		limit = 14
+		limit = defaultTrendLimit(interval)
 	}
+	bucketExpr := trendBucketExpr("COALESCE(finished_at, started_at)", interval)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT substr(COALESCE(finished_at, started_at), 1, 10) AS day
+		`SELECT `+bucketExpr+` AS bucket
 		 FROM review_runs
 		 WHERE status IN (?, ?)
 		   AND COALESCE(finished_at, started_at, '') <> ''
-		 GROUP BY day
-		 ORDER BY day DESC
+		 GROUP BY bucket
+		 ORDER BY bucket DESC
 		 LIMIT ?`, string(model.ReviewRunDone), string(model.ReviewRunFailed), limit)
 	if err != nil {
-		return nil, fmt.Errorf("analysis trend days: %w", err)
+		return nil, fmt.Errorf("analysis trend buckets: %w", err)
 	}
 	defer rows.Close()
-	var days []string
+	var buckets []string
 	for rows.Next() {
-		var day string
-		if err := rows.Scan(&day); err != nil {
-			return nil, fmt.Errorf("scan analysis trend day: %w", err)
+		var bucket string
+		if err := rows.Scan(&bucket); err != nil {
+			return nil, fmt.Errorf("scan analysis trend bucket: %w", err)
 		}
-		days = append(days, day)
+		buckets = append(buckets, bucket)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate analysis trend days: %w", err)
+		return nil, fmt.Errorf("iterate analysis trend buckets: %w", err)
 	}
-	sort.Strings(days)
+	sort.Strings(buckets)
 
-	out := make([]model.AnalysisTrendPoint, 0, len(days))
-	for _, day := range days {
-		point, err := s.analysisTrendPoint(ctx, day)
+	out := make([]model.AnalysisTrendPoint, 0, len(buckets))
+	for _, bucket := range buckets {
+		point, err := s.analysisTrendPoint(ctx, bucket, interval)
 		if err != nil {
 			return nil, err
 		}
@@ -99,10 +102,13 @@ func (s *Store) BuildAnalysisTrend(ctx context.Context, limit int) ([]model.Anal
 	return out, nil
 }
 
-func (s *Store) analysisTrendPoint(ctx context.Context, day string) (model.AnalysisTrendPoint, error) {
+func (s *Store) analysisTrendPoint(ctx context.Context, bucket, interval string) (model.AnalysisTrendPoint, error) {
 	var point model.AnalysisTrendPoint
-	point.Day = day
-	point.FinishedAt = parseTime(day + "T00:00:00Z")
+	point.Bucket = bucket
+	point.Interval = interval
+	point.Day = bucket
+	point.FinishedAt = parseTrendBucketTime(bucket, interval)
+	bucketExpr := trendBucketExpr("COALESCE(finished_at, started_at)", interval)
 	row := s.db.QueryRowContext(ctx,
 		`SELECT
 		   COUNT(*),
@@ -111,9 +117,9 @@ func (s *Store) analysisTrendPoint(ctx context.Context, day string) (model.Analy
 		 FROM review_runs
 		 WHERE status IN (?, ?)
 		   AND COALESCE(finished_at, started_at, '') <> ''
-		   AND substr(COALESCE(finished_at, started_at), 1, 10) = ?`,
+		   AND `+bucketExpr+` = ?`,
 		string(model.ReviewRunDone), string(model.ReviewRunFailed),
-		string(model.ReviewRunDone), string(model.ReviewRunFailed), day)
+		string(model.ReviewRunDone), string(model.ReviewRunFailed), bucket)
 	if err := row.Scan(&point.TotalReviewRuns, &point.SuccessfulReviewRuns, &point.FailedReviewRuns); err != nil {
 		return model.AnalysisTrendPoint{}, fmt.Errorf("scan analysis trend runs: %w", err)
 	}
@@ -122,6 +128,7 @@ func (s *Store) analysisTrendPoint(ctx context.Context, day string) (model.Analy
 		point.SuccessRate = float64(point.SuccessfulReviewRuns) / float64(completed)
 	}
 
+	findingBucketExpr := trendBucketExpr("COALESCE(rr.finished_at, rr.started_at)", interval)
 	row = s.db.QueryRowContext(ctx,
 		`SELECT
 		   COUNT(f.id),
@@ -131,12 +138,54 @@ func (s *Store) analysisTrendPoint(ctx context.Context, day string) (model.Analy
 		 FROM findings f
 		 JOIN review_runs rr ON rr.id=f.review_run_id
 		 WHERE COALESCE(rr.finished_at, rr.started_at, '') <> ''
-		   AND substr(COALESCE(rr.finished_at, rr.started_at), 1, 10) = ?`,
-		string(model.SeverityHigh), string(model.SeverityCritical), day)
+		   AND `+findingBucketExpr+` = ?`,
+		string(model.SeverityHigh), string(model.SeverityCritical), bucket)
 	if err := row.Scan(&point.TotalFindings, &point.OpenFindings, &point.HighCriticalOpen); err != nil {
 		return model.AnalysisTrendPoint{}, fmt.Errorf("scan analysis trend findings: %w", err)
 	}
 	return point, nil
+}
+
+func normalizeTrendInterval(interval string) string {
+	switch strings.ToLower(strings.TrimSpace(interval)) {
+	case "week", "weekly":
+		return "week"
+	case "month", "monthly":
+		return "month"
+	default:
+		return "day"
+	}
+}
+
+func defaultTrendLimit(interval string) int {
+	switch normalizeTrendInterval(interval) {
+	case "week":
+		return 12
+	case "month":
+		return 12
+	default:
+		return 14
+	}
+}
+
+func trendBucketExpr(timeExpr, interval string) string {
+	switch normalizeTrendInterval(interval) {
+	case "week":
+		return "date(" + timeExpr + ", printf('-%d days', (CAST(strftime('%w', " + timeExpr + ") AS INTEGER) + 6) % 7))"
+	case "month":
+		return "substr(" + timeExpr + ", 1, 7)"
+	default:
+		return "substr(" + timeExpr + ", 1, 10)"
+	}
+}
+
+func parseTrendBucketTime(bucket, interval string) time.Time {
+	switch normalizeTrendInterval(interval) {
+	case "month":
+		return parseTime(bucket + "-01T00:00:00Z")
+	default:
+		return parseTime(bucket + "T00:00:00Z")
+	}
 }
 
 func scanAnalysisReports(rows *sql.Rows) ([]model.AnalysisReport, error) {
