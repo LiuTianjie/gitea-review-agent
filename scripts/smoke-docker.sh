@@ -8,6 +8,10 @@ cookie_file="$(mktemp)"
 
 cleanup() {
   docker rm -f "$name" >/dev/null 2>&1 || true
+  if [ -d "$data_dir" ]; then
+    docker run --rm --entrypoint /bin/sh -v "$data_dir:/cleanup" "$image" \
+      -c 'chown -R 0:0 /cleanup && chmod -R u+rwX /cleanup' >/dev/null 2>&1 || true
+  fi
   rm -rf "$data_dir" "$cookie_file"
 }
 trap cleanup EXIT
