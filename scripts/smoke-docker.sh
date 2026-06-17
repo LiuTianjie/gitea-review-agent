@@ -5,12 +5,14 @@ image="${1:-codex-gitea:ci-smoke}"
 name="codex-gitea-smoke-$$"
 data_dir="$(mktemp -d)"
 cookie_file="$(mktemp)"
+host_uid="$(id -u)"
+host_gid="$(id -g)"
 
 cleanup() {
   docker rm -f "$name" >/dev/null 2>&1 || true
   if [ -d "$data_dir" ]; then
-    docker run --rm --entrypoint /bin/sh -v "$data_dir:/cleanup" "$image" \
-      -c 'chown -R 0:0 /cleanup && chmod -R u+rwX /cleanup' >/dev/null 2>&1 || true
+    docker run --rm --user 0:0 --entrypoint /bin/sh -v "$data_dir:/cleanup" "$image" \
+      -c "chown -R ${host_uid}:${host_gid} /cleanup && chmod -R u+rwX /cleanup" >/dev/null 2>&1 || true
   fi
   rm -rf "$data_dir" "$cookie_file"
 }
