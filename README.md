@@ -34,8 +34,20 @@ Gitea webhook ──▶ verify HMAC ──▶ enqueue (SQLite) ──▶ worker 
   a Claude app provider id in cc-switch. The service runs Claude Code through
   that MiniMax-compatible endpoint but stores/posts it as an independent
   `minimax` reviewer, so `/review minimax ...` targets its session.
+- **React admin console** — `/admin` is a Vite/React app embedded into the Go
+  binary. It covers task operations, runtime config, analytics, and project
+  Skills; no standalone HTML file is required in production.
 - **On-demand analytics** — the admin console can generate saved full-history
-  analysis reports for findings, severities, tags, agent results, and overlap.
+  analysis reports with ECharts trends for findings, success rate, severities,
+  tags, reviewer/developer ownership, and multi-agent overlap.
+- **Project Skills** — the console can distill recurring findings into a
+  project-scoped Codex `SKILL.md`. Generation runs as a background task and the
+  UI polls until it finishes. Generated Skills are publicly downloadable at
+  `/skills/<owner>/<repo>/SKILL.md`, and the console provides a natural-language
+  install instruction that can be copied directly.
+- **Operational readiness** — `/healthz` stays a tiny liveness check, while
+  `/readyz` returns DB/config/job counters and latest failure context for
+  deployment diagnostics.
 
 ## Auth: authfile (default) vs apikey
 
@@ -53,9 +65,17 @@ status" button to catch a stale token early.
 ### Image (CI → GHCR → Sealos)
 
 Pushing to `main` (or a `v*` tag) runs `.github/workflows/build-image.yml`, which
-tests, then builds a **multi-arch (amd64 + arm64)** image and pushes it to
-`ghcr.io/<owner>/gitea-review-agent`. On Sealos, deploy that image and mount the six
-volumes below. Make the GHCR package public, or add registry credentials in Sealos.
+builds the admin console, runs Go tests, runs a Docker smoke test against the
+new image, then builds a **multi-arch (amd64 + arm64)** image and pushes it to
+`ghcr.io/<owner>/<repo>`. On Sealos, deploy that image and mount the six volumes
+below. Make the GHCR package public, or add registry credentials in Sealos.
+
+The smoke test starts the freshly built container and verifies:
+
+- `/healthz` and `/readyz`
+- login-protected `/admin` and embedded React assets
+- task statistics, analytics trend, and Skill project APIs
+- unauthenticated Skill download from `/skills/<owner>/<repo>/SKILL.md`
 
 ### Local (docker compose)
 
@@ -79,11 +99,66 @@ Volumes: `/data` (sqlite), `/cache` (mirrors), `/work` (worktrees),
    - URL `http://<host>:8080/webhook`, Content-Type `application/json`
    - Secret = the webhook secret you set in the console
    - Events: **Pull Request** + **Pull Request Sync** + **Issue Comment**
+6. **Deployment check**: `/readyz` should return `{"ok":true,...}` after the
+   first boot. If it returns 503, inspect `config_warnings` first.
 
 ## Usage
 
 - Open a PR or push commits → automatic review.
 - Comment `/review <question>` on a PR → answered with the prior review's context.
+- Open `/admin` → inspect jobs, cancel pending jobs, rerun failed jobs, update
+  runtime config, generate analytics, and evolve project Skills.
+- Open `/skills/<owner>/<repo>/SKILL.md` → download a generated project Skill
+  without console authentication.
+
+## Admin console
+
+### Tasks
+
+The task tab shows recent jobs, status counters, retryable pending work, canceled
+and superseded jobs. Pending jobs can be canceled from the detail panel; worker
+finishes are conditional, so an old worker cannot overwrite a canceled or
+superseded final state.
+
+### Analytics
+
+Analytics reports are stored snapshots. Reports include:
+
+- finding and success-rate trends from existing review/finding data
+- severity/status/reviewer/developer distributions
+- high/critical recent issues with Gitea line links
+- repeated titles and multi-agent overlap scoped to the same PR
+
+### Skills
+
+The Skill tab is project-scoped. It uses existing findings as evidence, includes
+the previous generated Skill when present, and asks Codex to evolve the content
+instead of starting from scratch.
+
+Generation is asynchronous:
+
+1. `POST /admin/api/skills/<owner>/<repo>/generate` returns a background `task_id`.
+2. The UI polls `GET /admin/api/skills/<owner>/<repo>/generate/<task_id>`.
+3. When the task finishes, the UI refreshes the version, content, download link,
+   and copyable install instruction.
+
+Install instruction format:
+
+```text
+请为 <owner>/<repo> 安装并使用这个项目缺陷预防 Skill：https://<host>/skills/<owner>/<repo>/SKILL.md
+```
+
+## GitHub Pages
+
+`.github/workflows/pages.yml` publishes the static site in `docs/` to GitHub
+Pages on every push to `main`. In the repository settings, set Pages source to
+**GitHub Actions** if it is not already enabled.
+
+Default Pages URL:
+
+```text
+https://liutianjie.github.io/gitea-review-agent/
+```
 
 ## Configuration
 
