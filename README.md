@@ -1,53 +1,127 @@
-# codex-gitea
+<p align="center">
+  <img src="docs/assets/logo.svg" width="96" height="96" alt="gitea-review-agent logo" />
+</p>
 
-Self-hosted service that auto-reviews Gitea pull requests with the Codex CLI
-and, optionally, Claude Code or a MiniMax-compatible reviewer.
-On each PR event it runs a **static** code review (read-only — never builds, runs,
-or tests your code) and posts the findings back as inline review comments plus a
-summary. Reviews are **stateful**: follow-up pushes and `/review` comments resume
-the same Codex session, so it remembers what it already flagged.
+<h1 align="center">gitea-review-agent</h1>
+
+<p align="center">
+  Self-hosted pull request review automation for Gitea.
+</p>
+
+<p align="center">
+  <a href="https://liutianjie.github.io/gitea-review-agent/">Project site</a>
+  ·
+  <a href="#quick-start">Quick start</a>
+  ·
+  <a href="#configuration">Configuration</a>
+</p>
+
+gitea-review-agent receives Gitea pull request events through webhooks, prepares
+a read-only checkout, runs a configured reviewer, and posts review findings back
+to the PR. It can use Codex by default, and can also run Claude Code or a
+MiniMax-compatible reviewer as separate review backends. MiniMax-compatible
+runs reuse the Claude Code path and can be routed through cc-switch providers or
+an Anthropic-compatible relay endpoint.
+
+Reviews are stateful: follow-up pushes and `/review` comments can continue the
+same reviewer session instead of starting from an empty context every time.
+
+## Screenshots
+
+<p align="center">
+  <img src="docs/assets/console-analytics.png" alt="Analytics screen showing review success rate, findings, and trends" />
+</p>
+
+<p align="center">
+  <img src="docs/assets/console-skill.png" alt="Project rules screen showing repository-scoped rule exports" />
+</p>
+
+## Features
+
+- **Gitea PR review automation** — handles pull request, sync, and issue comment
+  events from Gitea webhooks.
+- **Pluggable reviewers** — Codex, Claude Code, and MiniMax-compatible reviewer
+  backends can be configured independently.
+- **cc-switch provider routing** — MiniMax-compatible reviews can reuse the
+  Claude Code runner and switch provider through cc-switch before each run.
+- **Read-only checkouts** — reviewer processes inspect the diff and do not run
+  repository code.
+- **Incremental git cache** — repositories are mirrored under `/cache`, then
+  checked out into deterministic worktrees for each job.
+- **Admin console** — `/admin` shows review jobs, logs, runtime configuration,
+  analytics, and project rule exports.
+- **Project rules** — each repository can expose a downloadable `SKILL.md` at
+  `/skills/<owner>/<repo>/SKILL.md`.
+- **Readiness endpoint** — `/healthz` is a liveness check; `/readyz` reports DB,
+  configuration, queue counters, and latest failure context.
 
 ## How it works
 
-```
-Gitea webhook ──▶ verify HMAC ──▶ enqueue (SQLite) ──▶ worker pool
-                                                          │
-                                   bare mirror + worktree (incremental fetch)
-                                                          │
-                              codex exec / claude --print (shared checkout)
-                                                          │
-                              map findings to diff lines ──▶ Gitea review API
+```text
+Gitea webhook
+  -> verify HMAC
+  -> enqueue job in SQLite
+  -> fetch cached mirror + prepare worktree
+  -> run configured reviewer
+  -> map findings to diff lines
+  -> publish review through Gitea API
 ```
 
-- **Stateful sessions** — first review creates a Codex thread; `synchronized`
-  (new push) and `/review` comments `resume` it. Session id is parsed from the
-  `thread.started` event in the `--json` stream.
-- **Git cache** — one bare mirror per repo under `/cache`; events only fetch the
-  delta, then check out a deterministic worktree. Big repos stay fast.
-- **Read-only** — codex runs with `sandbox_mode=read-only` + `approval_policy=never`.
-  It reviews the diff and never executes repo code.
-- **Optional Claude reviewer** — set `CLAUDE_ENABLED=true` to post a second,
-  independent Claude review. Codex and Claude share the same prepared worktree
-  and diff for a job; one reviewer failing does not block the other.
-- **Optional MiniMax reviewer** — set `MINIMAX_ENABLED=true` and either configure
-  `MINIMAX_API_KEY` / `MINIMAX_BASE_URL` directly (for relay gateways) or provide
-  a Claude app provider id in cc-switch. The service runs Claude Code through
-  that MiniMax-compatible endpoint but stores/posts it as an independent
-  `minimax` reviewer, so `/review minimax ...` targets its session.
-- **React admin console** — `/admin` is a Vite/React app embedded into the Go
-  binary. It covers task operations, runtime config, analytics, and project
-  Skills; no standalone HTML file is required in production.
-- **On-demand analytics** — the admin console can generate saved full-history
-  analysis reports with ECharts trends for findings, success rate, severities,
-  tags, reviewer/developer ownership, and multi-agent overlap.
-- **Project Skills** — the console can distill recurring findings into a
-  project-scoped Codex `SKILL.md`. Generation runs as a background task and the
-  UI polls until it finishes. Generated Skills are publicly downloadable at
-  `/skills/<owner>/<repo>/SKILL.md`, and the console provides a natural-language
-  install instruction that can be copied directly.
-- **Operational readiness** — `/healthz` stays a tiny liveness check, while
-  `/readyz` returns DB/config/job counters and latest failure context for
-  deployment diagnostics.
+## Reviewer backends
+
+Codex is the default reviewer. Claude Code and MiniMax-compatible reviewers are
+optional and keep their own reviewer identity, sessions, logs, and PR comments.
+
+MiniMax-compatible review runs through the Claude Code execution path. There are
+two supported ways to route it:
+
+- **cc-switch provider** — set `MINIMAX_PROVIDER_ID` to switch Claude Code to a
+  configured provider before the MiniMax review run.
+- **Direct relay endpoint** — set `MINIMAX_API_KEY` and `MINIMAX_BASE_URL` for an
+  Anthropic-compatible MiniMax or relay endpoint.
+
+Example:
+
+```bash
+MINIMAX_ENABLED=true
+MINIMAX_PROVIDER_ID=minimaxreview
+# or:
+MINIMAX_API_KEY=...
+MINIMAX_BASE_URL=https://relay.example.com
+```
+
+The job is still stored and posted as the `minimax` reviewer, so it can be
+tracked separately from Codex and Claude Code.
+
+## Quick start
+
+```bash
+docker run --rm \
+  -p 18080:8080 \
+  -e ADMIN_PASSWORD=choose-a-strong-password \
+  -e GITEA_URL=https://gitea.example.com \
+  -e GITEA_TOKEN=... \
+  ghcr.io/liutianjie/gitea-review-agent:latest
+```
+
+Then open `http://localhost:18080/admin`, finish the runtime configuration, and
+add a Gitea webhook pointing to `http://<host>:8080/webhook`.
+
+For local development or persistent data, use Docker Compose:
+
+```bash
+export ADMIN_PASSWORD=choose-a-strong-password
+docker compose up -d
+```
+
+Persist these paths in production:
+
+- `/data` — SQLite database
+- `/cache` — bare git mirrors
+- `/work` — temporary worktrees
+- `/codex-home` — Codex auth and sessions
+- `/claude-home` — Claude Code state
+- `/cc-switch` — optional provider/proxy configuration
 
 ## Auth: authfile (default) vs apikey
 
@@ -59,34 +133,6 @@ Gitea webhook ──▶ verify HMAC ──▶ enqueue (SQLite) ──▶ worker 
 In `authfile` mode the `/codex-home` volume **must be writable** so codex can
 refresh its OAuth token in place between runs. Use the console's "check auth
 status" button to catch a stale token early.
-
-## Deploy
-
-### Image (CI → GHCR → Sealos)
-
-Pushing to `main` (or a `v*` tag) runs `.github/workflows/build-image.yml`, which
-builds the admin console, runs Go tests, runs a Docker smoke test against the
-new image, then builds a **multi-arch (amd64 + arm64)** image and pushes it to
-`ghcr.io/<owner>/<repo>`. On Sealos, deploy that image and mount the six volumes
-below. Make the GHCR package public, or add registry credentials in Sealos.
-
-The smoke test starts the freshly built container and verifies:
-
-- `/healthz` and `/readyz`
-- login-protected `/admin` and embedded React assets
-- task statistics, analytics trend, and Skill project APIs
-- unauthenticated Skill download from `/skills/<owner>/<repo>/SKILL.md`
-
-### Local (docker compose)
-
-```bash
-export ADMIN_PASSWORD=choose-a-strong-password
-docker compose up -d
-```
-
-Volumes: `/data` (sqlite), `/cache` (mirrors), `/work` (worktrees),
-`/codex-home` (codex auth + sessions, **writable**), `/claude-home`
-(Claude Code state), and `/cc-switch` (provider/proxy config).
 
 ## First-run checklist
 
@@ -107,8 +153,8 @@ Volumes: `/data` (sqlite), `/cache` (mirrors), `/work` (worktrees),
 - Open a PR or push commits → automatic review.
 - Comment `/review <question>` on a PR → answered with the prior review's context.
 - Open `/admin` → inspect jobs, cancel pending jobs, rerun failed jobs, update
-  runtime config, generate analytics, and evolve project Skills.
-- Open `/skills/<owner>/<repo>/SKILL.md` → download a generated project Skill
+  runtime config, generate analytics, and manage project rules.
+- Open `/skills/<owner>/<repo>/SKILL.md` → download a generated project rule file
   without console authentication.
 
 ## Admin console
@@ -129,23 +175,22 @@ Analytics reports are stored snapshots. Reports include:
 - high/critical recent issues with Gitea line links
 - repeated titles and multi-agent overlap scoped to the same PR
 
-### Skills
+### Project rules
 
-The Skill tab is project-scoped. It uses existing findings as evidence, includes
-the previous generated Skill when present, and asks Codex to evolve the content
-instead of starting from scratch.
+The Rules tab is project-scoped. It uses existing findings as evidence and can
+produce a repository-specific `SKILL.md` file for future development and review.
 
 Generation is asynchronous:
 
 1. `POST /admin/api/skills/<owner>/<repo>/generate` returns a background `task_id`.
 2. The UI polls `GET /admin/api/skills/<owner>/<repo>/generate/<task_id>`.
 3. When the task finishes, the UI refreshes the version, content, download link,
-   and copyable install instruction.
+   and copyable usage instruction.
 
-Install instruction format:
+Usage instruction format:
 
 ```text
-请为 <owner>/<repo> 安装并使用这个项目缺陷预防 Skill：https://<host>/skills/<owner>/<repo>/SKILL.md
+请使用这个项目规则文件：https://<host>/skills/<owner>/<repo>/SKILL.md
 ```
 
 ## GitHub Pages

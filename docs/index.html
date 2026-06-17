@@ -8,6 +8,9 @@
       name="description"
       content="gitea-review-agent is a self-hosted Gitea pull request review service with pluggable reviewers, an admin console, analytics, and project rule exports."
     />
+    <link rel="icon" type="image/svg+xml" href="assets/logo.svg" />
+    <link rel="alternate icon" type="image/png" href="assets/favicon.png" />
+    <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
     <style>
       :root {
         color-scheme: light;
@@ -114,9 +117,11 @@
       .mark {
         width: 34px;
         height: 34px;
-        border: 1px solid rgba(0, 0, 0, 0.12);
+        display: block;
+        overflow: hidden;
+        border: 1px solid rgba(0, 0, 0, 0.08);
         border-radius: 8px;
-        background: linear-gradient(145deg, #1d1d1f, #333336);
+        background: url("assets/logo.svg") center / cover no-repeat;
         box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
       }
 
@@ -444,6 +449,10 @@
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 14px;
+      }
+
+      .grid + .grid {
+        margin-top: 14px;
       }
 
       .grid.two {
@@ -807,7 +816,19 @@
             <article class="card accent-gold">
               <span class="tag">MiniMax-compatible</span>
               <h3>兼容自定义 endpoint</h3>
-              <p>通过 Base URL 和 API Key 接入兼容链路，保留独立 reviewer 身份。</p>
+              <p>通过 Claude Code runner 接入兼容链路，保留独立 reviewer 身份。</p>
+            </article>
+          </div>
+          <div class="grid two">
+            <article class="card accent-gold">
+              <span class="tag">cc-switch</span>
+              <h3>按 provider 路由 Claude Code</h3>
+              <p>如果使用 cc-switch，可以在运行 MiniMax reviewer 前切到指定 Claude app provider，再执行同一套 review 流程。</p>
+            </article>
+            <article class="card accent-blue">
+              <span class="tag">Relay / direct</span>
+              <h3>也支持直接配置 endpoint</h3>
+              <p>没有 cc-switch 时，可以使用 MiniMax/relay 的 API Key 和 Anthropic-compatible Base URL。</p>
             </article>
           </div>
         </div>
@@ -865,7 +886,7 @@ http://127.0.0.1:18080/public/skills/tifenxia-fe/SKILL.md
               </div>
               <div class="line-item">
                 <strong>3. 连接 Reviewer</strong>
-                <p>按需启用 Codex、Claude Code 或 MiniMax-compatible reviewer，开始自动审查。</p>
+                <p>按需启用 Codex、Claude Code 或通过 cc-switch / relay 接入的 MiniMax-compatible reviewer。</p>
               </div>
             </div>
           </div>
