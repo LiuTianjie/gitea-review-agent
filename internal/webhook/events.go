@@ -11,6 +11,14 @@ import (
 
 type giteaUser struct {
 	Username string `json:"username"`
+	Login    string `json:"login"`
+}
+
+func (u giteaUser) name() string {
+	if u.Username != "" {
+		return u.Username
+	}
+	return u.Login
 }
 
 type giteaRepository struct {
@@ -27,6 +35,7 @@ type giteaBranch struct {
 type giteaPullRequest struct {
 	Base giteaBranch `json:"base"`
 	Head giteaBranch `json:"head"`
+	User giteaUser   `json:"user"`
 }
 
 // pullRequestPayload models the body sent for the X-Gitea-Event: pull_request.
@@ -43,7 +52,8 @@ type giteaComment struct {
 }
 
 type giteaIssue struct {
-	Number int `json:"number"`
+	Number int       `json:"number"`
+	User   giteaUser `json:"user"`
 	// PullRequest is present and non-null when the issue is a pull request.
 	// json.RawMessage lets us distinguish "absent/null" from "{}".
 	PullRequest json.RawMessage `json:"pull_request"`
@@ -83,10 +93,11 @@ func Parse(eventType string, body []byte) (*model.WebhookEvent, error) {
 			Event:  model.EventPullRequest,
 			Action: p.Action,
 			PR: model.PRRef{
-				Owner:  p.Repository.Owner.Username,
+				Owner:  p.Repository.Owner.name(),
 				Repo:   p.Repository.Name,
 				Number: p.Number,
 			},
+			Author:   p.PullRequest.User.name(),
 			BaseRef:  p.PullRequest.Base.Ref,
 			HeadRef:  p.PullRequest.Head.Ref,
 			HeadSHA:  p.PullRequest.Head.SHA,
@@ -103,10 +114,11 @@ func Parse(eventType string, body []byte) (*model.WebhookEvent, error) {
 			Event:  model.EventIssueComment,
 			Action: p.Action,
 			PR: model.PRRef{
-				Owner:  p.Repository.Owner.Username,
+				Owner:  p.Repository.Owner.name(),
 				Repo:   p.Repository.Name,
 				Number: p.Issue.Number,
 			},
+			Author:      p.Issue.User.name(),
 			CloneURL:    p.Repository.CloneURL,
 			IsPR:        isPRPayload(p.Issue.PullRequest),
 			CommentBody: p.Comment.Body,

@@ -69,6 +69,9 @@ func TestLoadEnvDefaults(t *testing.T) {
 	if c.Timeout != DefaultTimeout {
 		t.Errorf("Timeout = %s, want %s", c.Timeout, DefaultTimeout)
 	}
+	if c.GiteaTimeout != DefaultGiteaTimeout {
+		t.Errorf("GiteaTimeout = %s, want %s", c.GiteaTimeout, DefaultGiteaTimeout)
+	}
 	if len(c.TriggerKeywords) != len(DefaultTriggerKeywords) {
 		t.Fatalf("TriggerKeywords = %v, want %v", c.TriggerKeywords, DefaultTriggerKeywords)
 	}
@@ -91,6 +94,7 @@ func TestLoadEnvValues(t *testing.T) {
 		"CODEX_HOME":             "/tmp/codex",
 		"GITEA_URL":              "https://git.example.com",
 		"GITEA_TOKEN":            "tok-123",
+		"GITEA_TIMEOUT":          "45s",
 		"WEBHOOK_SECRET":         "whsec",
 		"MODEL":                  "gpt-5",
 		"CODEX_AUTH_MODE":        "apikey",
@@ -128,6 +132,9 @@ func TestLoadEnvValues(t *testing.T) {
 	}
 	if c.GiteaToken != "tok-123" {
 		t.Errorf("GiteaToken = %q", c.GiteaToken)
+	}
+	if c.GiteaTimeout != 45*time.Second {
+		t.Errorf("GiteaTimeout = %s, want 45s", c.GiteaTimeout)
 	}
 	if c.WebhookSecret != "whsec" {
 		t.Errorf("WebhookSecret = %q", c.WebhookSecret)
@@ -202,6 +209,7 @@ func TestApplyOverrides(t *testing.T) {
 	c.ApplyOverrides(map[string]string{
 		"gitea_url":              "https://db.example.com",
 		"gitea_token":            "db-tok",
+		"gitea_timeout":          "75s",
 		"model":                  "db-model",
 		"codex_auth_mode":        "apikey",
 		"codex_api_key":          "sk-db",
@@ -228,6 +236,9 @@ func TestApplyOverrides(t *testing.T) {
 	}
 	if c.GiteaToken != "db-tok" {
 		t.Errorf("GiteaToken not overridden: %q", c.GiteaToken)
+	}
+	if c.GiteaTimeout != 75*time.Second {
+		t.Errorf("GiteaTimeout not overridden: %s", c.GiteaTimeout)
 	}
 	if c.Model != "db-model" {
 		t.Errorf("Model not overridden: %q", c.Model)
@@ -328,6 +339,7 @@ func TestValidateAuthFileMode(t *testing.T) {
 		CodexAuthMode: AuthModeAuthFile,
 		Concurrency:   1,
 		Timeout:       time.Minute,
+		GiteaTimeout:  time.Minute,
 	}
 	if err := c.Validate(); err != nil {
 		t.Errorf("Validate(authfile, no api key) = %v, want nil", err)
@@ -339,6 +351,7 @@ func TestValidateAPIKeyMode(t *testing.T) {
 		CodexAuthMode: AuthModeAPIKey,
 		Concurrency:   1,
 		Timeout:       time.Minute,
+		GiteaTimeout:  time.Minute,
 	}
 	if err := c.Validate(); err == nil {
 		t.Error("Validate(apikey, no key) = nil, want error")
@@ -351,40 +364,44 @@ func TestValidateAPIKeyMode(t *testing.T) {
 }
 
 func TestValidateBadMode(t *testing.T) {
-	c := &Config{CodexAuthMode: "bogus", Concurrency: 1, Timeout: time.Minute}
+	c := &Config{CodexAuthMode: "bogus", Concurrency: 1, Timeout: time.Minute, GiteaTimeout: time.Minute}
 	if err := c.Validate(); err == nil {
 		t.Error("Validate(bogus mode) = nil, want error")
 	}
 }
 
 func TestValidateBadSandboxMode(t *testing.T) {
-	c := &Config{CodexAuthMode: AuthModeAuthFile, CodexSandbox: "bogus", Concurrency: 1, Timeout: time.Minute}
+	c := &Config{CodexAuthMode: AuthModeAuthFile, CodexSandbox: "bogus", Concurrency: 1, Timeout: time.Minute, GiteaTimeout: time.Minute}
 	if err := c.Validate(); err == nil {
 		t.Error("Validate(bogus sandbox) = nil, want error")
 	}
 }
 
 func TestValidateBadConcurrencyAndTimeout(t *testing.T) {
-	c := &Config{CodexAuthMode: AuthModeAuthFile, Concurrency: 0, Timeout: time.Minute}
+	c := &Config{CodexAuthMode: AuthModeAuthFile, Concurrency: 0, Timeout: time.Minute, GiteaTimeout: time.Minute}
 	if err := c.Validate(); err == nil {
 		t.Error("Validate(concurrency=0) = nil, want error")
 	}
-	c = &Config{CodexAuthMode: AuthModeAuthFile, Concurrency: 1, Timeout: 0}
+	c = &Config{CodexAuthMode: AuthModeAuthFile, Concurrency: 1, Timeout: 0, GiteaTimeout: time.Minute}
 	if err := c.Validate(); err == nil {
 		t.Error("Validate(timeout=0) = nil, want error")
 	}
-	c = &Config{CodexAuthMode: AuthModeAuthFile, Concurrency: 1, Timeout: time.Minute, ClaudeMaxBudgetUSD: -0.1}
+	c = &Config{CodexAuthMode: AuthModeAuthFile, Concurrency: 1, Timeout: time.Minute, GiteaTimeout: 0}
+	if err := c.Validate(); err == nil {
+		t.Error("Validate(gitea_timeout=0) = nil, want error")
+	}
+	c = &Config{CodexAuthMode: AuthModeAuthFile, Concurrency: 1, Timeout: time.Minute, GiteaTimeout: time.Minute, ClaudeMaxBudgetUSD: -0.1}
 	if err := c.Validate(); err == nil {
 		t.Error("Validate(claude budget < 0) = nil, want error")
 	}
-	c = &Config{CodexAuthMode: AuthModeAuthFile, Concurrency: 1, Timeout: time.Minute, MiniMaxMaxBudgetUSD: -0.1}
+	c = &Config{CodexAuthMode: AuthModeAuthFile, Concurrency: 1, Timeout: time.Minute, GiteaTimeout: time.Minute, MiniMaxMaxBudgetUSD: -0.1}
 	if err := c.Validate(); err == nil {
 		t.Error("Validate(minimax budget < 0) = nil, want error")
 	}
 }
 
 func TestWarnings(t *testing.T) {
-	c := &Config{CodexAuthMode: AuthModeAuthFile, Concurrency: 1, Timeout: time.Minute}
+	c := &Config{CodexAuthMode: AuthModeAuthFile, Concurrency: 1, Timeout: time.Minute, GiteaTimeout: time.Minute}
 	w := c.Warnings()
 	if len(w) == 0 {
 		t.Error("Warnings() on empty config = none, want warnings about gitea/webhook/admin")
@@ -398,6 +415,7 @@ func TestWarnings(t *testing.T) {
 		CodexAuthMode: AuthModeAuthFile,
 		Concurrency:   1,
 		Timeout:       time.Minute,
+		GiteaTimeout:  time.Minute,
 	}
 	if w := full.Warnings(); len(w) != 0 {
 		t.Errorf("Warnings() on full config = %v, want none", w)

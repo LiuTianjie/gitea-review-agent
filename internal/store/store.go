@@ -120,6 +120,7 @@ func migrateSchema(db *sql.DB) error {
 		{table: "findings", name: "last_seen_sha", def: "TEXT"},
 		{table: "findings", name: "mapped_inline", def: "INTEGER DEFAULT 0"},
 		{table: "findings", name: "tags", def: "TEXT"},
+		{table: "pulls", name: "author", def: "TEXT"},
 		{table: "jobs", name: "error_type", def: "TEXT"},
 		{table: "jobs", name: "retryable", def: "INTEGER DEFAULT 0"},
 		{table: "jobs", name: "next_attempt_at", def: "TEXT"},
@@ -145,6 +146,20 @@ func migrateSchema(db *sql.DB) error {
 		WHERE COALESCE(session_id,'')<>'' OR COALESCE(last_review_id,0)<>0
 		ON CONFLICT(pull_id,agent) DO NOTHING`); err != nil {
 		return fmt.Errorf("migrate pull reviewer states: %w", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS project_skills(
+		id INTEGER PRIMARY KEY,
+		owner TEXT NOT NULL,
+		repo TEXT NOT NULL,
+		slug TEXT NOT NULL,
+		title TEXT NOT NULL,
+		content TEXT NOT NULL,
+		version INTEGER NOT NULL DEFAULT 1,
+		source_finding_count INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT,
+		updated_at TEXT,
+		UNIQUE(owner,repo))`); err != nil {
+		return fmt.Errorf("migrate project skills: %w", err)
 	}
 	return nil
 }

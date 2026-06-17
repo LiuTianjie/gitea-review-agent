@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS repos(
   allowed INTEGER DEFAULT 1, UNIQUE(owner,name));
 CREATE TABLE IF NOT EXISTS pulls(
   id INTEGER PRIMARY KEY, repo_id INTEGER REFERENCES repos(id),
-  number INTEGER, session_id TEXT, head_sha TEXT, base_ref TEXT,
+  number INTEGER, author TEXT, session_id TEXT, head_sha TEXT, base_ref TEXT,
   last_review_id INTEGER, updated_at TEXT, UNIQUE(repo_id,number));
 CREATE TABLE IF NOT EXISTS pull_reviewer_states(
   id INTEGER PRIMARY KEY, pull_id INTEGER REFERENCES pulls(id) ON DELETE CASCADE,
@@ -46,3 +46,15 @@ CREATE TABLE IF NOT EXISTS settings(
   key TEXT PRIMARY KEY, value TEXT, is_secret INTEGER DEFAULT 0, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS analysis_reports(
   id INTEGER PRIMARY KEY, summary_json TEXT NOT NULL, created_at TEXT);
+CREATE TABLE IF NOT EXISTS project_skills(
+  id INTEGER PRIMARY KEY,
+  owner TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  source_finding_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT,
+  updated_at TEXT,
+  UNIQUE(owner,repo));

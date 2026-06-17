@@ -122,6 +122,7 @@ type WebhookEvent struct {
 	Event      EventType
 	Action     string // opened|synchronized|edited|closed|reopened (PR); created|edited|deleted (comment)
 	PR         PRRef
+	Author     string
 	BaseRef    string
 	HeadRef    string
 	HeadSHA    string
@@ -203,6 +204,7 @@ type ReviewResult struct {
 type PullState struct {
 	ID           int64
 	PR           PRRef
+	Author       string
 	SessionID    string
 	HeadSHA      string
 	BaseRef      string
@@ -351,15 +353,16 @@ type JobLog struct {
 
 // JobStats summarizes queue/review health for the console dashboard.
 type JobStats struct {
-	TotalJobs    int
-	ReviewJobs   int
-	ReviewedJobs int
-	Done         int
-	Failed       int
-	Running      int
-	Pending      int
-	Superseded   int
-	Canceled     int
+	TotalJobs        int
+	ReviewJobs       int
+	ReviewedJobs     int
+	Done             int
+	Failed           int
+	Running          int
+	Pending          int
+	Superseded       int
+	Canceled         int
+	RetryablePending int
 }
 
 // JobFilter constrains console job history queries.
@@ -375,6 +378,17 @@ type AnalysisReport struct {
 	Summary   AnalysisSummary
 }
 
+type AnalysisTrendPoint struct {
+	FinishedAt           time.Time `json:"finished_at"`
+	TotalReviewRuns      int       `json:"total_review_runs"`
+	SuccessfulReviewRuns int       `json:"successful_review_runs"`
+	FailedReviewRuns     int       `json:"failed_review_runs"`
+	SuccessRate          float64   `json:"success_rate"`
+	TotalFindings        int       `json:"total_findings"`
+	OpenFindings         int       `json:"open_findings"`
+	HighCriticalOpen     int       `json:"high_critical_open"`
+}
+
 type AnalysisSummary struct {
 	TotalReviewRuns      int                     `json:"total_review_runs"`
 	SuccessfulReviewRuns int                     `json:"successful_review_runs"`
@@ -385,6 +399,7 @@ type AnalysisSummary struct {
 	FixedFindings        int                     `json:"fixed_findings"`
 	HighCriticalOpen     int                     `json:"high_critical_open"`
 	ByAgent              map[string]AgentSummary `json:"by_agent"`
+	ByDeveloper          []DeveloperSummary      `json:"by_developer"`
 	BySeverity           map[string]int          `json:"by_severity"`
 	ByStatus             map[string]int          `json:"by_status"`
 	TopTags              []TagSummary            `json:"top_tags"`
@@ -399,6 +414,17 @@ type AgentSummary struct {
 	Failed     int `json:"failed"`
 	Findings   int `json:"findings"`
 	Open       int `json:"open"`
+}
+
+type DeveloperSummary struct {
+	Developer            string `json:"developer"`
+	PullRequests         int    `json:"pull_requests"`
+	ReviewRuns           int    `json:"review_runs"`
+	SuccessfulReviewRuns int    `json:"successful_review_runs"`
+	FailedReviewRuns     int    `json:"failed_review_runs"`
+	Findings             int    `json:"findings"`
+	OpenFindings         int    `json:"open_findings"`
+	HighCriticalOpen     int    `json:"high_critical_open"`
 }
 
 type TagSummary struct {
@@ -426,6 +452,7 @@ type SevereFindingSummary struct {
 
 type AgentOverlapSummary struct {
 	Fingerprint string   `json:"fingerprint"`
+	AgentCount  int      `json:"agent_count"`
 	Owner       string   `json:"owner"`
 	Repo        string   `json:"repo"`
 	PullNumber  int      `json:"pull_number"`
@@ -434,6 +461,62 @@ type AgentOverlapSummary struct {
 	Line        int      `json:"line"`
 	LastSeenSHA string   `json:"last_seen_sha"`
 	Agents      []string `json:"agents"`
+}
+
+type ProjectSkillSummary struct {
+	Owner            string    `json:"owner"`
+	Repo             string    `json:"repo"`
+	Slug             string    `json:"slug"`
+	PullRequests     int       `json:"pull_requests"`
+	ReviewRuns       int       `json:"review_runs"`
+	Findings         int       `json:"findings"`
+	OpenFindings     int       `json:"open_findings"`
+	HighCriticalOpen int       `json:"high_critical_open"`
+	SkillVersion     int       `json:"skill_version"`
+	SkillUpdatedAt   time.Time `json:"skill_updated_at"`
+}
+
+type ProjectSkill struct {
+	ID                 int64
+	Owner              string
+	Repo               string
+	Slug               string
+	Title              string
+	Content            string
+	Version            int
+	SourceFindingCount int
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
+
+type ProjectSkillPattern struct {
+	Title      string   `json:"title"`
+	Severity   Severity `json:"severity"`
+	Status     string   `json:"status"`
+	Count      int      `json:"count"`
+	OpenCount  int      `json:"open_count"`
+	SamplePath string   `json:"sample_path"`
+	SampleLine int      `json:"sample_line"`
+	Agents     []string `json:"agents"`
+	Tags       []string `json:"tags"`
+}
+
+type ProjectSkillContext struct {
+	Owner            string
+	Repo             string
+	Slug             string
+	PullRequests     int
+	ReviewRuns       int
+	Findings         int
+	OpenFindings     int
+	HighCriticalOpen int
+	TopTags          []TagSummary
+	Patterns         []ProjectSkillPattern
+}
+
+type SkillGenerationInput struct {
+	Context  ProjectSkillContext
+	Existing *ProjectSkill
 }
 
 // ---------- Ports (interfaces) ----------
@@ -446,6 +529,7 @@ type Store interface {
 	ClaimJob(ctx context.Context) (*Job, error) // next pending -> running; nil if none
 	FinishJob(ctx context.Context, id int64, status JobStatus, errMsg string) error
 	FinishJobDetailed(ctx context.Context, id int64, finish JobFinish) error
+	FinishRunningJobDetailed(ctx context.Context, id int64, finish JobFinish) (bool, error)
 	RerunJob(ctx context.Context, id int64) (*Job, error)
 	CancelPendingJob(ctx context.Context, id int64) (*Job, error)
 	RecoverRunning(ctx context.Context) error // running -> pending on boot
@@ -480,6 +564,11 @@ type Store interface {
 	LatestAnalysisReport(ctx context.Context) (*AnalysisReport, error)
 	ListAnalysisReports(ctx context.Context, limit int) ([]AnalysisReport, error)
 	BuildAnalysisSummary(ctx context.Context) (AnalysisSummary, error)
+	BuildAnalysisTrend(ctx context.Context, limit int) ([]AnalysisTrendPoint, error)
+	ListProjectSkillSummaries(ctx context.Context) ([]ProjectSkillSummary, error)
+	GetProjectSkill(ctx context.Context, owner, repo string) (*ProjectSkill, error)
+	UpsertProjectSkill(ctx context.Context, skill *ProjectSkill) error
+	BuildProjectSkillContext(ctx context.Context, owner, repo string) (ProjectSkillContext, error)
 
 	// Settings (console-editable runtime config)
 	GetSetting(ctx context.Context, key string) (string, bool, error)

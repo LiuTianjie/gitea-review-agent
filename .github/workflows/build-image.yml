@@ -18,8 +18,20 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: internal/console/frontend/package-lock.json
+      - name: Build admin console
+        working-directory: internal/console/frontend
+        run: |
+          npm ci
+          npm run build
       - run: go build ./...
       - run: go test ./...
+      - name: Smoke test Docker image
+        run: scripts/smoke-docker.sh codex-gitea:ci-smoke
 
   build-and-push:
     needs: test

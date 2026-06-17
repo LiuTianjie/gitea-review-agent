@@ -30,7 +30,11 @@ type Orchestrator struct {
 
 	TriggerKeywords []string
 	RepoAllowlist   []string // entries "owner/repo"; empty = allow all
-	Logger          *log.Logger
+	// TriggerKeywordsFunc and RepoAllowlistFunc are used by production wiring
+	// so console-updated settings apply to subsequent jobs without restart.
+	TriggerKeywordsFunc func() []string
+	RepoAllowlistFunc   func() []string
+	Logger              *log.Logger
 }
 
 var errPullRequestClosed = errors.New("pull request is closed or merged")
@@ -112,11 +116,12 @@ func (o *Orchestrator) Process(ctx context.Context, job *model.Job) error {
 }
 
 func (o *Orchestrator) allowed(pr model.PRRef) bool {
-	if len(o.RepoAllowlist) == 0 {
+	allowlist := o.repoAllowlist()
+	if len(allowlist) == 0 {
 		return true
 	}
 	full := pr.Owner + "/" + pr.Repo
-	for _, a := range o.RepoAllowlist {
+	for _, a := range allowlist {
 		if strings.EqualFold(strings.TrimSpace(a), full) {
 			return true
 		}
@@ -439,7 +444,7 @@ func (o *Orchestrator) review(ctx context.Context, jobID int64, ev *model.Webhoo
 		return fmt.Errorf("get pull: %w", err)
 	}
 	if pull == nil {
-		if err := o.Store.UpsertPull(ctx, &model.PullState{PR: pr, HeadSHA: ev.HeadSHA, BaseRef: ev.BaseRef}); err != nil {
+		if err := o.Store.UpsertPull(ctx, &model.PullState{PR: pr, Author: ev.Author, HeadSHA: ev.HeadSHA, BaseRef: ev.BaseRef}); err != nil {
 			return fmt.Errorf("ensure pull: %w", err)
 		}
 		pull, err = o.Store.GetPull(ctx, pr)
@@ -790,7 +795,7 @@ func (o *Orchestrator) commentReviewers(question string) ([]model.Reviewer, stri
 
 // matchTrigger returns the text following a trigger keyword, if present.
 func (o *Orchestrator) matchTrigger(body string) (string, bool) {
-	for _, kw := range o.TriggerKeywords {
+	for _, kw := range o.triggerKeywords() {
 		kw = strings.TrimSpace(kw)
 		if kw == "" {
 			continue
@@ -804,6 +809,20 @@ func (o *Orchestrator) matchTrigger(body string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func (o *Orchestrator) triggerKeywords() []string {
+	if o.TriggerKeywordsFunc != nil {
+		return o.TriggerKeywordsFunc()
+	}
+	return o.TriggerKeywords
+}
+
+func (o *Orchestrator) repoAllowlist() []string {
+	if o.RepoAllowlistFunc != nil {
+		return o.RepoAllowlistFunc()
+	}
+	return o.RepoAllowlist
 }
 
 // ---------- helpers ----------

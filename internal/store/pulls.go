@@ -28,11 +28,12 @@ func (s *Store) GetPull(ctx context.Context, pr model.PRRef) (*model.PullState, 
 		baseRef      sql.NullString
 		lastReviewID sql.NullInt64
 		updatedAt    sql.NullString
+		author       sql.NullString
 	)
 	err = s.db.QueryRowContext(ctx,
-		`SELECT id, session_id, head_sha, base_ref, last_review_id, updated_at
+		`SELECT id, session_id, head_sha, base_ref, last_review_id, updated_at, author
 		 FROM pulls WHERE repo_id=? AND number=?`, repoID, pr.Number).Scan(
-		&st.ID, &sessionID, &headSHA, &baseRef, &lastReviewID, &updatedAt)
+		&st.ID, &sessionID, &headSHA, &baseRef, &lastReviewID, &updatedAt, &author)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -41,6 +42,7 @@ func (s *Store) GetPull(ctx context.Context, pr model.PRRef) (*model.PullState, 
 	}
 	st.PR = pr
 	st.SessionID = sessionID.String
+	st.Author = author.String
 	st.HeadSHA = headSHA.String
 	st.BaseRef = baseRef.String
 	st.LastReviewID = lastReviewID.Int64
@@ -56,15 +58,16 @@ func (s *Store) UpsertPull(ctx context.Context, st *model.PullState) error {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO pulls(repo_id,number,session_id,head_sha,base_ref,last_review_id,updated_at)
-		 VALUES(?,?,?,?,?,?,?)
+		`INSERT INTO pulls(repo_id,number,author,session_id,head_sha,base_ref,last_review_id,updated_at)
+		 VALUES(?,?,?,?,?,?,?,?)
 		 ON CONFLICT(repo_id,number) DO UPDATE SET
+		   author=CASE WHEN excluded.author<>'' THEN excluded.author ELSE pulls.author END,
 		   session_id=excluded.session_id,
 		   head_sha=excluded.head_sha,
 		   base_ref=excluded.base_ref,
 		   last_review_id=excluded.last_review_id,
 		   updated_at=excluded.updated_at`,
-		repoID, st.PR.Number, st.SessionID, st.HeadSHA, st.BaseRef,
+		repoID, st.PR.Number, st.Author, st.SessionID, st.HeadSHA, st.BaseRef,
 		st.LastReviewID, nowRFC3339())
 	if err != nil {
 		return fmt.Errorf("upsert pull: %w", err)

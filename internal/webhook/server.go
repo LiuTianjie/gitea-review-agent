@@ -20,12 +20,14 @@ const (
 // It is expected to be quick (e.g. an enqueue). The handler returns 200 to
 // Gitea immediately after it returns; downstream work happens out of band.
 type OnEventFunc func(context.Context, *model.WebhookEvent) error
+type SecretFunc func() string
 
 // Handler verifies and parses incoming Gitea webhooks, then forwards the
 // normalized event to OnEvent. It does not perform any downstream processing.
 type Handler struct {
-	secret  string
-	OnEvent OnEventFunc
+	secret     string
+	secretFunc SecretFunc
+	OnEvent    OnEventFunc
 }
 
 // NewHandler builds a Handler with the given webhook secret and optional
@@ -37,6 +39,23 @@ func NewHandler(secret string, onEvent ...OnEventFunc) *Handler {
 		h.OnEvent = onEvent[0]
 	}
 	return h
+}
+
+// NewHandlerWithSecretFunc builds a Handler that reads the webhook secret for
+// each request so console-updated settings take effect without restarting.
+func NewHandlerWithSecretFunc(secretFunc SecretFunc, onEvent ...OnEventFunc) *Handler {
+	h := &Handler{secretFunc: secretFunc}
+	if len(onEvent) > 0 {
+		h.OnEvent = onEvent[0]
+	}
+	return h
+}
+
+func (h *Handler) currentSecret() string {
+	if h.secretFunc != nil {
+		return h.secretFunc()
+	}
+	return h.secret
 }
 
 // Routes returns an http.Handler that serves /webhook and /healthz.
@@ -73,7 +92,7 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify the HMAC-SHA256 signature over the raw body (constant-time).
-	if !Verify(body, r.Header.Get(headerSignature), h.secret) {
+	if !Verify(body, r.Header.Get(headerSignature), h.currentSecret()) {
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}

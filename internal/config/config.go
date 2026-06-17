@@ -43,6 +43,7 @@ const (
 	DefaultSandboxMode     = SandboxReadOnly
 	DefaultConcurrency     = 5
 	DefaultTimeout         = 30 * time.Minute
+	DefaultGiteaTimeout    = 90 * time.Second
 	DefaultClaudeBudget    = 0.30
 	DefaultMiniMaxBudget   = 0.30
 )
@@ -63,6 +64,7 @@ type Config struct {
 	GiteaURL      string
 	GiteaToken    string
 	WebhookSecret string
+	GiteaTimeout  time.Duration
 
 	// Codex
 	Model         string
@@ -124,6 +126,7 @@ func LoadEnv() *Config {
 		GiteaURL:            os.Getenv("GITEA_URL"),
 		GiteaToken:          os.Getenv("GITEA_TOKEN"),
 		WebhookSecret:       os.Getenv("WEBHOOK_SECRET"),
+		GiteaTimeout:        parseDuration(os.Getenv("GITEA_TIMEOUT"), DefaultGiteaTimeout),
 		Model:               getEnv("MODEL", DefaultModel),
 		CodexAuthMode:       normalizeAuthMode(getEnv("CODEX_AUTH_MODE", DefaultAuthMode)),
 		CodexAPIKey:         os.Getenv("CODEX_API_KEY"),
@@ -167,6 +170,9 @@ func (c *Config) ApplyOverrides(settings map[string]string) {
 	}
 	if v, ok := settings["webhook_secret"]; ok {
 		c.WebhookSecret = v
+	}
+	if v, ok := settings["gitea_timeout"]; ok {
+		c.GiteaTimeout = parseDuration(v, c.GiteaTimeout)
 	}
 	if v, ok := settings["model"]; ok {
 		c.Model = v
@@ -281,6 +287,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Timeout <= 0 {
 		return fmt.Errorf("timeout must be > 0, got %s", c.Timeout)
+	}
+	if c.GiteaTimeout <= 0 {
+		return fmt.Errorf("gitea_timeout must be > 0, got %s", c.GiteaTimeout)
 	}
 	if c.ClaudeMaxBudgetUSD < 0 {
 		return fmt.Errorf("claude_max_budget_usd must be >= 0, got %g", c.ClaudeMaxBudgetUSD)

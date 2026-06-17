@@ -188,8 +188,11 @@ func (q *Queue) run(parent context.Context, job *model.Job) {
 		finish.Error = err.Error()
 		q.logf("job %d (%s#%d) %s: %v", job.ID, key, job.PR.Number, finish.Status, err)
 	}
-	if ferr := q.store.FinishJobDetailed(context.Background(), job.ID, finish); ferr != nil {
+	updated, ferr := q.store.FinishRunningJobDetailed(context.Background(), job.ID, finish)
+	if ferr != nil {
 		q.logf("finish job %d: %v", job.ID, ferr)
+	} else if !updated {
+		q.jobLog(job.ID, "queue", "finish skipped because job is no longer running")
 	} else {
 		q.jobLog(job.ID, "queue", "finished with status "+string(finish.Status))
 		if finish.Status == model.JobPending {

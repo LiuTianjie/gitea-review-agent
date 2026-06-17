@@ -58,6 +58,33 @@ func TestGetPullRequestStatus_HTTP(t *testing.T) {
 	}
 }
 
+func TestGetPullRequestStatusRetriesTransientGET(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			http.Error(w, "slow upstream", http.StatusGatewayTimeout)
+			return
+		}
+		io.WriteString(w, `{"state":"open","merged":false}`)
+	}))
+	defer srv.Close()
+
+	c := NewDynamic(func() Config {
+		return Config{BaseURL: srv.URL, Token: "T"}
+	})
+	status, err := c.GetPullRequestStatus(context.Background(), testPR())
+	if err != nil {
+		t.Fatalf("GetPullRequestStatus: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want retry once", attempts)
+	}
+	if !status.Open() {
+		t.Fatalf("status = %+v, want open", status)
+	}
+}
+
 func TestPostReview_HTTP(t *testing.T) {
 	var captured reviewRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -555,6 +555,85 @@ func TestAnalyticsReportEndpoints(t *testing.T) {
 	}
 }
 
+func TestSkillGenerateAsyncLifecycle(t *testing.T) {
+	c, _ := newTestConsole(t, nil)
+	c.skillGenerator = func(ctx context.Context, in model.SkillGenerationInput) (string, error) {
+		if in.Context.Owner != "acme" || in.Context.Repo != "widgets" {
+			t.Fatalf("generator context = %s/%s", in.Context.Owner, in.Context.Repo)
+		}
+		return "# Generated Skill\n\nUse the existing defects.", nil
+	}
+	seedSkillProjectFindings(t, c, "acme", "widgets")
+	h := c.Routes()
+
+	w := do(t, h, "POST", "/admin/api/skills/acme/widgets/generate", "", true)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("generate: code=%d body=%s", w.Code, w.Body.String())
+	}
+	task := decodeSkillTaskResponse(t, w.Body.Bytes())
+	if task.ID == "" || task.Status != "running" {
+		t.Fatalf("initial task = %+v", task)
+	}
+
+	task = waitSkillTask(t, h, "acme", "widgets", task.ID)
+	if task.Status != "done" || task.Skill == nil || !strings.Contains(task.Skill.Content, "Generated Skill") {
+		t.Fatalf("done task = %+v", task)
+	}
+}
+
+func TestSkillGenerateReturnsExistingRunningTask(t *testing.T) {
+	c, _ := newTestConsole(t, nil)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	c.skillGenerator = func(ctx context.Context, in model.SkillGenerationInput) (string, error) {
+		close(started)
+		<-release
+		return "# Slow Skill\n\nGenerated after polling.", nil
+	}
+	seedSkillProjectFindings(t, c, "acme", "widgets")
+	h := c.Routes()
+
+	w := do(t, h, "POST", "/admin/api/skills/acme/widgets/generate", "", true)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("generate 1: code=%d body=%s", w.Code, w.Body.String())
+	}
+	first := decodeSkillTaskResponse(t, w.Body.Bytes())
+	<-started
+
+	w = do(t, h, "POST", "/admin/api/skills/acme/widgets/generate", "", true)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("generate 2: code=%d body=%s", w.Code, w.Body.String())
+	}
+	second := decodeSkillTaskResponse(t, w.Body.Bytes())
+	if second.ID != first.ID {
+		t.Fatalf("second task id=%q, want existing %q", second.ID, first.ID)
+	}
+	close(release)
+	task := waitSkillTask(t, h, "acme", "widgets", first.ID)
+	if task.Status != "done" {
+		t.Fatalf("task status=%q, want done", task.Status)
+	}
+}
+
+func TestSkillGenerateAsyncFailure(t *testing.T) {
+	c, _ := newTestConsole(t, nil)
+	c.skillGenerator = func(ctx context.Context, in model.SkillGenerationInput) (string, error) {
+		return "", context.DeadlineExceeded
+	}
+	seedSkillProjectFindings(t, c, "acme", "widgets")
+	h := c.Routes()
+
+	w := do(t, h, "POST", "/admin/api/skills/acme/widgets/generate", "", true)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("generate: code=%d body=%s", w.Code, w.Body.String())
+	}
+	task := decodeSkillTaskResponse(t, w.Body.Bytes())
+	task = waitSkillTask(t, h, "acme", "widgets", task.ID)
+	if task.Status != "failed" || task.Error == "" {
+		t.Fatalf("failed task = %+v", task)
+	}
+}
+
 func TestIndexServed(t *testing.T) {
 	c, _ := newTestConsole(t, nil)
 	h := c.Routes()
@@ -569,6 +648,57 @@ func TestIndexServed(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "gitea-review-agent 控制台") {
 		t.Errorf("index body missing title")
 	}
+}
+
+func seedSkillProjectFindings(t *testing.T, c *Console, owner, repo string) {
+	t.Helper()
+	ctx := context.Background()
+	pr := model.PRRef{Owner: owner, Repo: repo, Number: 12}
+	if err := c.store.UpsertPull(ctx, &model.PullState{PR: pr, Author: "dev-a", HeadSHA: "sha0"}); err != nil {
+		t.Fatalf("UpsertPull: %v", err)
+	}
+	pull, err := c.store.GetPull(ctx, pr)
+	if err != nil {
+		t.Fatalf("GetPull: %v", err)
+	}
+	fs := []model.Finding{{Path: "src/app.tsx", Line: 42, Side: model.SideNew, Severity: model.SeverityHigh, Title: "Repeated bug", Body: "details", Tags: []string{"ui"}}}
+	if err := c.store.SaveFindings(ctx, pull.ID, "sha1", fs, model.FindingSaveOptions{Agent: "codex"}); err != nil {
+		t.Fatalf("SaveFindings: %v", err)
+	}
+}
+
+func decodeSkillTaskResponse(t *testing.T, data []byte) skillGenerationTaskView {
+	t.Helper()
+	var resp struct {
+		OK   bool                    `json:"ok"`
+		Task skillGenerationTaskView `json:"task"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		t.Fatalf("decode task: %v body=%s", err, string(data))
+	}
+	if !resp.OK {
+		t.Fatalf("task response not ok: %s", string(data))
+	}
+	return resp.Task
+}
+
+func waitSkillTask(t *testing.T, h http.Handler, owner, repo, id string) skillGenerationTaskView {
+	t.Helper()
+	path := "/admin/api/skills/" + owner + "/" + repo + "/generate/" + id
+	var task skillGenerationTaskView
+	for i := 0; i < 50; i++ {
+		w := do(t, h, "GET", path, "", true)
+		if w.Code != http.StatusOK {
+			t.Fatalf("poll task: code=%d body=%s", w.Code, w.Body.String())
+		}
+		task = decodeSkillTaskResponse(t, w.Body.Bytes())
+		if task.Status != "running" {
+			return task
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("task %s did not finish, last=%+v", id, task)
+	return task
 }
 
 func TestIsSecretKey(t *testing.T) {

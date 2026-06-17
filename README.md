@@ -93,6 +93,7 @@ Env vars (all optional except `ADMIN_PASSWORD`; the console can set the rest):
 |-----|---------|-------|
 | `ADMIN_PASSWORD` | — | required; protects `/admin` |
 | `GITEA_URL` / `GITEA_TOKEN` | — | bot account |
+| `GITEA_TIMEOUT` | `90s` | per Gitea API request; also configurable in console |
 | `WEBHOOK_SECRET` | — | HMAC-SHA256 verification |
 | `MODEL` | `gpt-5-codex` | codex model |
 | `CODEX_AUTH_MODE` | `authfile` | or `apikey` |
@@ -128,6 +129,17 @@ Env vars (all optional except `ADMIN_PASSWORD`; the console can set the rest):
 ```bash
 go build ./...
 go test ./...
+```
+
+The admin console is a Vite/React app embedded into the Go binary. CI and the
+Dockerfile build it automatically before compiling the service, so deploying the
+new image is enough. For local `go build` / `go test`, rebuild it after changing
+console UI code:
+
+```bash
+cd internal/console/frontend
+npm install
+npm run build
 ```
 
 Module layout: `internal/{webhook,queue,review,gitcache,codex,gitea,store,config,console}`,

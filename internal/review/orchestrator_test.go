@@ -171,11 +171,14 @@ func (s *fakeStore) SupersedePending(context.Context, model.PRRef) error        
 func (s *fakeStore) ClaimJob(context.Context) (*model.Job, error)                    { return nil, nil }
 func (s *fakeStore) FinishJob(context.Context, int64, model.JobStatus, string) error { return nil }
 func (s *fakeStore) FinishJobDetailed(context.Context, int64, model.JobFinish) error { return nil }
-func (s *fakeStore) RerunJob(context.Context, int64) (*model.Job, error)             { return nil, nil }
-func (s *fakeStore) CancelPendingJob(context.Context, int64) (*model.Job, error)     { return nil, nil }
-func (s *fakeStore) RecoverRunning(context.Context) error                            { return nil }
-func (s *fakeStore) AppendJobLog(context.Context, int64, string, string) error       { return nil }
-func (s *fakeStore) ListJobs(context.Context, int, int) ([]model.JobView, error)     { return nil, nil }
+func (s *fakeStore) FinishRunningJobDetailed(context.Context, int64, model.JobFinish) (bool, error) {
+	return true, nil
+}
+func (s *fakeStore) RerunJob(context.Context, int64) (*model.Job, error)         { return nil, nil }
+func (s *fakeStore) CancelPendingJob(context.Context, int64) (*model.Job, error) { return nil, nil }
+func (s *fakeStore) RecoverRunning(context.Context) error                        { return nil }
+func (s *fakeStore) AppendJobLog(context.Context, int64, string, string) error   { return nil }
+func (s *fakeStore) ListJobs(context.Context, int, int) ([]model.JobView, error) { return nil, nil }
 func (s *fakeStore) ListJobsFiltered(context.Context, model.JobFilter, int, int) ([]model.JobView, error) {
 	return nil, nil
 }
@@ -210,6 +213,19 @@ func (s *fakeStore) ListAnalysisReports(context.Context, int) ([]model.AnalysisR
 }
 func (s *fakeStore) BuildAnalysisSummary(context.Context) (model.AnalysisSummary, error) {
 	return model.AnalysisSummary{}, nil
+}
+func (s *fakeStore) BuildAnalysisTrend(context.Context, int) ([]model.AnalysisTrendPoint, error) {
+	return nil, nil
+}
+func (s *fakeStore) ListProjectSkillSummaries(context.Context) ([]model.ProjectSkillSummary, error) {
+	return nil, nil
+}
+func (s *fakeStore) GetProjectSkill(context.Context, string, string) (*model.ProjectSkill, error) {
+	return nil, nil
+}
+func (s *fakeStore) UpsertProjectSkill(context.Context, *model.ProjectSkill) error { return nil }
+func (s *fakeStore) BuildProjectSkillContext(context.Context, string, string) (model.ProjectSkillContext, error) {
+	return model.ProjectSkillContext{}, nil
 }
 func (s *fakeStore) Close() error { return nil }
 
@@ -916,5 +932,59 @@ func TestReview_RepoAllowlist(t *testing.T) {
 	}
 	if gt.reviewID != 0 {
 		t.Error("review posted for repo not in allowlist")
+	}
+}
+
+func TestReview_DynamicRepoAllowlist(t *testing.T) {
+	allowlist := []string{"someone/else"}
+	gt := &fakeGitea{diff: diffWith("x", 1)}
+	o := &Orchestrator{
+		Store: newFakeStore(), Cache: &fakeCache{},
+		Reviewers: []model.Reviewer{&fakeCodex{result: &model.ReviewResult{}}}, Gitea: gt,
+		RepoAllowlistFunc: func() []string { return allowlist },
+	}
+	if err := o.Process(context.Background(), prEvent("opened", "h1")); err != nil {
+		t.Fatalf("Process denied: %v", err)
+	}
+	if gt.reviewID != 0 {
+		t.Fatalf("review posted before allowlist update")
+	}
+	allowlist = []string{"alice/repo"}
+	if err := o.Process(context.Background(), prEvent("synchronized", "h2")); err != nil {
+		t.Fatalf("Process allowed: %v", err)
+	}
+	if gt.reviewID == 0 {
+		t.Fatalf("review not posted after allowlist update")
+	}
+}
+
+func TestReview_DynamicCommentTrigger(t *testing.T) {
+	st := newFakeStore()
+	pr := model.PRRef{Owner: "alice", Repo: "repo", Number: 7}
+	st.pulls["alice__repo"] = &model.PullState{ID: 1, PR: pr, SessionID: "thread-1", HeadSHA: "h1", BaseRef: "main"}
+	triggerKeywords := []string{"/old"}
+	cx := &fakeCodex{askReply: "answer"}
+	gt := &fakeGitea{}
+	o := &Orchestrator{
+		Store: st, Cache: &fakeCache{}, Reviewers: []model.Reviewer{cx}, Gitea: gt,
+		TriggerKeywordsFunc: func() []string { return triggerKeywords },
+	}
+	ev := model.WebhookEvent{
+		Event: model.EventIssueComment, Action: "created", IsPR: true,
+		PR: pr, CommentBody: "/new please check", HeadRef: "feat",
+	}
+	b, _ := json.Marshal(ev)
+	if err := o.Process(context.Background(), &model.Job{Payload: b, PR: pr, Event: ev.Event, Action: ev.Action}); err != nil {
+		t.Fatalf("Process old trigger: %v", err)
+	}
+	if cx.lastAsk != "" || len(gt.posted) != 0 {
+		t.Fatalf("comment unexpectedly handled before trigger update")
+	}
+	triggerKeywords = []string{"/new"}
+	if err := o.Process(context.Background(), &model.Job{Payload: b, PR: pr, Event: ev.Event, Action: ev.Action}); err != nil {
+		t.Fatalf("Process new trigger: %v", err)
+	}
+	if cx.lastAsk != "please check" || len(gt.posted) != 1 {
+		t.Fatalf("dynamic trigger did not handle comment: ask=%q posted=%v", cx.lastAsk, gt.posted)
 	}
 }

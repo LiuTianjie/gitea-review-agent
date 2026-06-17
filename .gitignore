@@ -29,6 +29,9 @@ auth.json
 *.out
 coverage.*
 
+# Frontend
+node_modules/
+
 # Editor / OS
 .DS_Store
 .idea/

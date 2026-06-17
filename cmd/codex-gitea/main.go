@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -79,17 +80,30 @@ func main() {
 	}
 
 	// Build modules.
-	giteaClient := gitea.New(cfg.GiteaURL, cfg.GiteaToken, &http.Client{Timeout: 30 * time.Second})
-	cache := gitcache.New(cfg.CacheDir, cfg.WorkDir, gitcache.WithToken(cfg.GiteaToken))
+	giteaClient := gitea.NewDynamic(func() gitea.Config {
+		snap := configSnapshot()
+		return gitea.Config{
+			BaseURL: snap.GiteaURL,
+			Token:   snap.GiteaToken,
+			Timeout: snap.GiteaTimeout,
+		}
+	})
+	cache := gitcache.New(cfg.CacheDir, cfg.WorkDir, gitcache.WithTokenFunc(func() (string, error) {
+		return configSnapshot().GiteaToken, nil
+	}))
 
 	orch := &review.Orchestrator{
-		Store:           st,
-		Cache:           cache,
-		ReviewersFunc:   func() []model.Reviewer { return buildReviewers(configSnapshot()) },
-		Gitea:           giteaClient,
-		TriggerKeywords: cfg.TriggerKeywords,
-		RepoAllowlist:   cfg.RepoAllowlist,
-		Logger:          logger,
+		Store:         st,
+		Cache:         cache,
+		ReviewersFunc: func() []model.Reviewer { return buildReviewers(configSnapshot()) },
+		Gitea:         giteaClient,
+		TriggerKeywordsFunc: func() []string {
+			return configSnapshot().TriggerKeywords
+		},
+		RepoAllowlistFunc: func() []string {
+			return configSnapshot().RepoAllowlist
+		},
+		Logger: logger,
 	}
 
 	q := queue.New(st, orch, cfg.Concurrency, logger)
@@ -111,7 +125,9 @@ func main() {
 		}
 		return nil
 	}
-	wh := webhook.NewHandler(cfg.WebhookSecret, onEvent)
+	wh := webhook.NewHandlerWithSecretFunc(func() string {
+		return configSnapshot().WebhookSecret
+	}, onEvent)
 
 	statusProvider := func() map[string]console.StatusFunc {
 		return buildStatusFns(configSnapshot())
@@ -120,12 +136,25 @@ func main() {
 		console.ConfigProvider(configSnapshot),
 		console.StatusProvider(statusProvider),
 		console.SettingsApplyFunc(applySettings),
+		console.SkillGeneratorFunc(func(ctx context.Context, in model.SkillGenerationInput) (string, error) {
+			snap := configSnapshot()
+			runner := codex.New(codex.Options{
+				CodexHome:   snap.CodexHome,
+				Model:       snap.Model,
+				APIKey:      snap.CodexAPIKey,
+				SandboxMode: snap.CodexSandbox,
+				Timeout:     snap.Timeout,
+			})
+			return runner.GenerateText(ctx, os.TempDir(), console.BuildProjectSkillPrompt(in))
+		}),
 	)
 
 	root := http.NewServeMux()
 	root.Handle("/webhook", wh)
 	root.Handle("/healthz", wh)
+	root.HandleFunc("/readyz", readyzHandler(st, configSnapshot))
 	root.Handle("/admin/", cons.Routes())
+	root.Handle("/skills/", cons.PublicRoutes())
 
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: root}
 
@@ -202,4 +231,99 @@ func buildStatusFns(cfg *config.Config) map[string]console.StatusFunc {
 		statusFns[r.Name()] = func(ctx context.Context) (string, error) { return r.Status(ctx) }
 	}
 	return statusFns
+}
+
+type readyzJobStats struct {
+	Total            int `json:"total"`
+	Running          int `json:"running"`
+	Pending          int `json:"pending"`
+	Failed           int `json:"failed"`
+	Superseded       int `json:"superseded"`
+	Canceled         int `json:"canceled"`
+	RetryablePending int `json:"retryable_pending"`
+}
+
+type readyzFailure struct {
+	ID         int64  `json:"id"`
+	Owner      string `json:"owner"`
+	Repo       string `json:"repo"`
+	Number     int    `json:"number"`
+	ErrorType  string `json:"error_type"`
+	Error      string `json:"error"`
+	CreatedAt  string `json:"created_at"`
+	FinishedAt string `json:"finished_at"`
+}
+
+func readyzHandler(st *store.Store, configSnapshot func() *config.Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+
+		cfg := configSnapshot()
+		warnings := []string(nil)
+		if cfg == nil {
+			warnings = append(warnings, "config is unavailable")
+		} else {
+			warnings = cfg.Warnings()
+		}
+
+		dbOK := true
+		var stats model.JobStats
+		var dbErr string
+		if st == nil {
+			dbOK = false
+			dbErr = "store is unavailable"
+		} else {
+			var err error
+			stats, err = st.JobStats(ctx)
+			if err != nil {
+				dbOK = false
+				dbErr = err.Error()
+			}
+		}
+
+		var latestFailure *readyzFailure
+		if dbOK {
+			if failed, err := st.LatestFailedJobView(ctx); err != nil {
+				dbOK = false
+				dbErr = err.Error()
+			} else if failed != nil {
+				latestFailure = &readyzFailure{
+					ID: failed.ID, Owner: failed.PR.Owner, Repo: failed.PR.Repo, Number: failed.PR.Number,
+					ErrorType: string(failed.ErrorType), Error: failed.Error,
+					CreatedAt: failed.CreatedAt.Format(time.RFC3339),
+				}
+				if failed.FinishedAt != nil && !failed.FinishedAt.IsZero() {
+					latestFailure.FinishedAt = failed.FinishedAt.Format(time.RFC3339)
+				}
+			}
+		}
+
+		ok := dbOK && len(warnings) == 0
+		status := http.StatusOK
+		if !ok {
+			status = http.StatusServiceUnavailable
+		}
+		resp := map[string]any{
+			"ok":              ok,
+			"db_ok":           dbOK,
+			"config_warnings": warnings,
+			"jobs": readyzJobStats{
+				Total: stats.TotalJobs, Running: stats.Running, Pending: stats.Pending,
+				Failed: stats.Failed, Superseded: stats.Superseded, Canceled: stats.Canceled,
+				RetryablePending: stats.RetryablePending,
+			},
+			"latest_failure": latestFailure,
+		}
+		if dbErr != "" {
+			resp["db_error"] = dbErr
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(resp)
+	}
 }

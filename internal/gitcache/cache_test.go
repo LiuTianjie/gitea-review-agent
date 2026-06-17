@@ -166,6 +166,34 @@ func TestWithTokenDoesNotBreakClone(t *testing.T) {
 	}
 }
 
+func TestWithTokenFuncIsLazy(t *testing.T) {
+	cloneURL, baseRef, headSHA := setupRemote(t)
+	tokens := []string{"first-token", "second-token", "third-token"}
+	var calls int
+	c := New(t.TempDir(), t.TempDir(), WithTokenFunc(func() (string, error) {
+		if calls >= len(tokens) {
+			return tokens[len(tokens)-1], nil
+		}
+		token := tokens[calls]
+		calls++
+		return token, nil
+	}))
+
+	pr := model.PRRef{Owner: "acme", Repo: "private", Number: 1}
+	if _, err := c.Prepare(context.Background(), pr, cloneURL, baseRef, "refs/pull/1/head", headSHA); err != nil {
+		t.Fatalf("first Prepare: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("token calls after first prepare = %d, want clone+fetch", calls)
+	}
+	if _, err := c.Prepare(context.Background(), pr, cloneURL, baseRef, "refs/pull/1/head", headSHA); err != nil {
+		t.Fatalf("second Prepare: %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("token calls after second prepare = %d, want another fetch", calls)
+	}
+}
+
 // TestKeyedMutexSerializesSameKey verifies same-key ops are serialized while
 // distinct keys run concurrently.
 func TestKeyedMutexSerializesSameKey(t *testing.T) {

@@ -1,0 +1,16 @@
+.git
+.github
+codex-gitea
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-*
+
+data
+cache
+work
+codex-home
+
+internal/console/frontend/node_modules
+internal/console/static/dist

@@ -216,6 +216,13 @@ func TestFinishJobDetailedSchedulesRetry(t *testing.T) {
 	if none != nil {
 		t.Fatalf("delayed retry claimed too early: %+v", none)
 	}
+	stats, err := st.JobStats(ctx)
+	if err != nil {
+		t.Fatalf("JobStats delayed retry: %v", err)
+	}
+	if stats.RetryablePending != 1 {
+		t.Fatalf("RetryablePending = %d, want 1", stats.RetryablePending)
+	}
 	if _, err := st.db.ExecContext(ctx, `UPDATE jobs SET next_attempt_at=? WHERE id=?`, time.Now().UTC().Add(-time.Minute).Format(time.RFC3339), job.ID); err != nil {
 		t.Fatalf("make retry due: %v", err)
 	}
@@ -290,6 +297,67 @@ func TestCancelPendingJobRejectsRunning(t *testing.T) {
 	}
 	if got.Status != model.JobRunning {
 		t.Fatalf("running job status=%q, want running", got.Status)
+	}
+}
+
+func TestFinishRunningJobDetailedDoesNotOverwriteSuperseded(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	job, _, err := st.EnqueueJob(ctx, sampleEvent("d-finish-running-superseded"))
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	claimed, err := st.ClaimJob(ctx)
+	if err != nil {
+		t.Fatalf("ClaimJob: %v", err)
+	}
+	if claimed.ID != job.ID {
+		t.Fatalf("claimed id=%d, want %d", claimed.ID, job.ID)
+	}
+	if err := st.SupersedePending(ctx, job.PR); err != nil {
+		t.Fatalf("SupersedePending: %v", err)
+	}
+	updated, err := st.FinishRunningJobDetailed(ctx, job.ID, model.JobFinish{Status: model.JobDone})
+	if err != nil {
+		t.Fatalf("FinishRunningJobDetailed: %v", err)
+	}
+	if updated {
+		t.Fatalf("FinishRunningJobDetailed updated superseded job")
+	}
+	got, err := st.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Status != model.JobSuperseded {
+		t.Fatalf("status=%q, want superseded", got.Status)
+	}
+}
+
+func TestFinishRunningJobDetailedDoesNotOverwriteCanceled(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	job, _, err := st.EnqueueJob(ctx, sampleEvent("d-finish-running-canceled"))
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if err := st.FinishJob(ctx, job.ID, model.JobCanceled, ""); err != nil {
+		t.Fatalf("mark canceled: %v", err)
+	}
+	updated, err := st.FinishRunningJobDetailed(ctx, job.ID, model.JobFinish{Status: model.JobDone})
+	if err != nil {
+		t.Fatalf("FinishRunningJobDetailed: %v", err)
+	}
+	if updated {
+		t.Fatalf("FinishRunningJobDetailed updated canceled job")
+	}
+	got, err := st.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Status != model.JobCanceled {
+		t.Fatalf("status=%q, want canceled", got.Status)
 	}
 }
 
@@ -862,6 +930,7 @@ func TestUpsertAndGetPull(t *testing.T) {
 
 	in := &model.PullState{
 		PR:           pr,
+		Author:       "dev-a",
 		SessionID:    "sess-1",
 		HeadSHA:      "deadbeef",
 		BaseRef:      "main",
@@ -878,7 +947,7 @@ func TestUpsertAndGetPull(t *testing.T) {
 	if got == nil {
 		t.Fatalf("GetPull: got nil after upsert")
 	}
-	if got.SessionID != "sess-1" || got.HeadSHA != "deadbeef" ||
+	if got.Author != "dev-a" || got.SessionID != "sess-1" || got.HeadSHA != "deadbeef" ||
 		got.BaseRef != "main" || got.LastReviewID != 100 {
 		t.Fatalf("GetPull roundtrip mismatch: %+v", got)
 	}
@@ -891,6 +960,7 @@ func TestUpsertAndGetPull(t *testing.T) {
 
 	// Update overwrites fields.
 	in.SessionID = "sess-2"
+	in.Author = ""
 	in.LastReviewID = 200
 	if err := st.UpsertPull(ctx, in); err != nil {
 		t.Fatalf("UpsertPull update: %v", err)
@@ -899,7 +969,7 @@ func TestUpsertAndGetPull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPull 2: %v", err)
 	}
-	if got2.SessionID != "sess-2" || got2.LastReviewID != 200 {
+	if got2.Author != "dev-a" || got2.SessionID != "sess-2" || got2.LastReviewID != 200 {
 		t.Fatalf("GetPull after update mismatch: %+v", got2)
 	}
 	if got2.ID != got.ID {
@@ -946,7 +1016,7 @@ func TestSaveAndListFindings(t *testing.T) {
 	ctx := context.Background()
 
 	pr := model.PRRef{Owner: "acme", Repo: "widgets", Number: 11}
-	if err := st.UpsertPull(ctx, &model.PullState{PR: pr, HeadSHA: "sha0"}); err != nil {
+	if err := st.UpsertPull(ctx, &model.PullState{PR: pr, Author: "dev-a", HeadSHA: "sha0"}); err != nil {
 		t.Fatalf("UpsertPull: %v", err)
 	}
 	pull, err := st.GetPull(ctx, pr)
@@ -1032,7 +1102,7 @@ func TestAnalysisReports(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
 	pr := model.PRRef{Owner: "acme", Repo: "widgets", Number: 21}
-	if err := st.UpsertPull(ctx, &model.PullState{PR: pr, HeadSHA: "sha0"}); err != nil {
+	if err := st.UpsertPull(ctx, &model.PullState{PR: pr, Author: "dev-a", HeadSHA: "sha0"}); err != nil {
 		t.Fatalf("UpsertPull: %v", err)
 	}
 	pull, err := st.GetPull(ctx, pr)
@@ -1067,6 +1137,14 @@ func TestAnalysisReports(t *testing.T) {
 		summary.RecentSevere[0].Repo != "widgets" || summary.RecentSevere[0].PullNumber != 21 {
 		t.Fatalf("recent severe repo metadata mismatch: %+v", summary.RecentSevere)
 	}
+	if len(summary.ByDeveloper) != 1 {
+		t.Fatalf("ByDeveloper len = %d, want 1: %+v", len(summary.ByDeveloper), summary.ByDeveloper)
+	}
+	dev := summary.ByDeveloper[0]
+	if dev.Developer != "dev-a" || dev.PullRequests != 1 || dev.ReviewRuns != 1 ||
+		dev.SuccessfulReviewRuns != 1 || dev.Findings != 1 || dev.OpenFindings != 1 || dev.HighCriticalOpen != 1 {
+		t.Fatalf("ByDeveloper mismatch: %+v", dev)
+	}
 	hasRuntime := false
 	for _, tag := range summary.TopTags {
 		if tag.Tag == "runtime" && tag.Count == 1 {
@@ -1093,6 +1171,120 @@ func TestAnalysisReports(t *testing.T) {
 	}
 	if len(list) != 1 || list[0].ID != report.ID {
 		t.Fatalf("list mismatch: %+v", list)
+	}
+}
+
+func TestBuildAnalysisTrendUsesReviewRunData(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	pr := model.PRRef{Owner: "acme", Repo: "widgets", Number: 21}
+	if err := st.UpsertPull(ctx, &model.PullState{PR: pr, Author: "dev-a", HeadSHA: "sha0"}); err != nil {
+		t.Fatalf("UpsertPull: %v", err)
+	}
+	pull, err := st.GetPull(ctx, pr)
+	if err != nil {
+		t.Fatalf("GetPull: %v", err)
+	}
+
+	run1 := &model.ReviewRun{PullID: pull.ID, Agent: "codex", HeadSHA: "sha1"}
+	if err := st.CreateReviewRun(ctx, run1); err != nil {
+		t.Fatalf("CreateReviewRun run1: %v", err)
+	}
+	finding := model.Finding{
+		Path: "a.go", Line: 10, Side: model.SideNew,
+		Severity: model.SeverityHigh, Title: "bug A", Body: "x",
+	}
+	if err := st.SaveFindings(ctx, pull.ID, "sha1", []model.Finding{finding}, model.FindingSaveOptions{
+		Agent: "codex", ReviewRunID: run1.ID,
+	}); err != nil {
+		t.Fatalf("SaveFindings run1: %v", err)
+	}
+	if err := st.FinishReviewRun(ctx, run1.ID, model.ReviewRunDone, "", 1); err != nil {
+		t.Fatalf("FinishReviewRun run1: %v", err)
+	}
+	if _, err := st.db.Exec(`UPDATE review_runs SET finished_at='2026-06-17T01:00:00Z' WHERE id=?`, run1.ID); err != nil {
+		t.Fatalf("backdate run1: %v", err)
+	}
+
+	run2 := &model.ReviewRun{PullID: pull.ID, Agent: "minimax", HeadSHA: "sha2"}
+	if err := st.CreateReviewRun(ctx, run2); err != nil {
+		t.Fatalf("CreateReviewRun run2: %v", err)
+	}
+	if err := st.FinishReviewRun(ctx, run2.ID, model.ReviewRunFailed, "timeout", 0); err != nil {
+		t.Fatalf("FinishReviewRun run2: %v", err)
+	}
+	if _, err := st.db.Exec(`UPDATE review_runs SET finished_at='2026-06-17T02:00:00Z' WHERE id=?`, run2.ID); err != nil {
+		t.Fatalf("backdate run2: %v", err)
+	}
+
+	points, err := st.BuildAnalysisTrend(ctx, 12)
+	if err != nil {
+		t.Fatalf("BuildAnalysisTrend: %v", err)
+	}
+	if len(points) != 2 {
+		t.Fatalf("trend len = %d, want 2: %+v", len(points), points)
+	}
+	if points[0].TotalReviewRuns != 1 || points[0].SuccessfulReviewRuns != 1 ||
+		points[0].TotalFindings != 1 || points[0].OpenFindings != 1 || points[0].HighCriticalOpen != 1 {
+		t.Fatalf("first trend point mismatch: %+v", points[0])
+	}
+	if points[1].TotalReviewRuns != 2 || points[1].SuccessfulReviewRuns != 1 ||
+		points[1].FailedReviewRuns != 1 || points[1].SuccessRate != 0.5 || points[1].TotalFindings != 1 {
+		t.Fatalf("second trend point mismatch: %+v", points[1])
+	}
+}
+
+func TestAnalysisAgentOverlapIsScopedToSamePull(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	pr := model.PRRef{Owner: "acme", Repo: "widgets", Number: 21}
+	if err := st.UpsertPull(ctx, &model.PullState{PR: pr, HeadSHA: "sha0"}); err != nil {
+		t.Fatalf("UpsertPull same pull: %v", err)
+	}
+	pull, err := st.GetPull(ctx, pr)
+	if err != nil {
+		t.Fatalf("GetPull same pull: %v", err)
+	}
+
+	otherPR := model.PRRef{Owner: "acme", Repo: "widgets", Number: 22}
+	if err := st.UpsertPull(ctx, &model.PullState{PR: otherPR, HeadSHA: "sha0"}); err != nil {
+		t.Fatalf("UpsertPull other pull: %v", err)
+	}
+	otherPull, err := st.GetPull(ctx, otherPR)
+	if err != nil {
+		t.Fatalf("GetPull other pull: %v", err)
+	}
+
+	finding := model.Finding{
+		Path: "a.go", Line: 10, Side: model.SideNew,
+		Severity: model.SeverityHigh, Title: "shared bug", Body: "x",
+	}
+	for _, agent := range []string{"codex", "claude", "minimax"} {
+		if err := st.SaveFindings(ctx, pull.ID, "sha1", []model.Finding{finding}, model.FindingSaveOptions{Agent: agent}); err != nil {
+			t.Fatalf("SaveFindings %s: %v", agent, err)
+		}
+	}
+	if err := st.SaveFindings(ctx, otherPull.ID, "sha2", []model.Finding{finding}, model.FindingSaveOptions{Agent: "codex"}); err != nil {
+		t.Fatalf("SaveFindings other pull: %v", err)
+	}
+
+	summary, err := st.BuildAnalysisSummary(ctx)
+	if err != nil {
+		t.Fatalf("BuildAnalysisSummary: %v", err)
+	}
+	if len(summary.AgentOverlap) != 1 {
+		t.Fatalf("AgentOverlap len = %d, want 1: %+v", len(summary.AgentOverlap), summary.AgentOverlap)
+	}
+	got := summary.AgentOverlap[0]
+	if got.Owner != "acme" || got.Repo != "widgets" || got.PullNumber != 21 {
+		t.Fatalf("AgentOverlap scoped to wrong pull: %+v", got)
+	}
+	if got.AgentCount != 3 || strings.Join(got.Agents, ",") != "claude,codex,minimax" {
+		t.Fatalf("AgentOverlap agents = count %d list %+v, want claude,codex,minimax", got.AgentCount, got.Agents)
+	}
+	if got.Path != "a.go" || got.Line != 10 || got.LastSeenSHA != "sha1" {
+		t.Fatalf("AgentOverlap location mismatch: %+v", got)
 	}
 }
 

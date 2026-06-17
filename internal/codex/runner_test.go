@@ -300,6 +300,28 @@ func TestRunner_Ask(t *testing.T) {
 	}
 }
 
+func TestRunner_GenerateText(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "stub.log")
+	writeStub(t, logPath)
+
+	r := New(Options{})
+	ans, err := r.GenerateText(context.Background(), t.TempDir(), "write a skill")
+	if err != nil {
+		t.Fatalf("GenerateText: %v", err)
+	}
+	if ans != "stub answer text" {
+		t.Fatalf("GenerateText = %q", ans)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	log := string(logData)
+	if !strings.Contains(log, "ARG[0]=exec") || !strings.Contains(log, "STDIN=write a skill") {
+		t.Fatalf("GenerateText did not call codex exec with prompt:\n%s", log)
+	}
+}
+
 func TestRunner_AskEmptySession(t *testing.T) {
 	r := New(Options{})
 	if _, err := r.Ask(context.Background(), "", t.TempDir(), "q"); err == nil {

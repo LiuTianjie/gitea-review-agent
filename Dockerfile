@@ -1,11 +1,20 @@
 # syntax=docker/dockerfile:1
 
+# ---------- console frontend ----------
+FROM node:22-bookworm-slim AS console-ui
+WORKDIR /src/internal/console/frontend
+COPY internal/console/frontend/package*.json ./
+RUN npm ci
+COPY internal/console/frontend ./
+RUN npm run build
+
 # ---------- build stage ----------
 FROM golang:1.26 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+COPY --from=console-ui /src/internal/console/static/dist ./internal/console/static/dist
 # Static build so it runs on the slim runtime without libc surprises.
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
     -o /out/codex-gitea ./cmd/codex-gitea

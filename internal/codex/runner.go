@@ -228,6 +228,35 @@ func (r *Runner) Ask(ctx context.Context, sessionID, worktree, question string) 
 	return humanizeStructuredAnswer(sr.LastAgentMessage), nil
 }
 
+// GenerateText runs a one-shot prompt and returns the final agent message.
+func (r *Runner) GenerateText(ctx context.Context, worktree, prompt string) (string, error) {
+	if strings.TrimSpace(worktree) == "" {
+		worktree = os.TempDir()
+	}
+	args := []string{
+		"exec", "-",
+		"--json",
+		"-c", "approval_policy=never",
+		"-c", "sandbox_mode=" + r.sandbox,
+		"--skip-git-repo-check",
+	}
+	if r.model != "" {
+		args = append(args, "--model", r.model)
+	}
+	stream, err := r.run(ctx, worktree, args, validUTF8Prompt(prompt))
+	if err != nil {
+		return "", err
+	}
+	sr, err := parseStream(bytes.NewReader(stream))
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(sr.LastAgentMessage) == "" {
+		return "", fmt.Errorf("codex generate text: no agent message in response")
+	}
+	return strings.TrimSpace(sr.LastAgentMessage), nil
+}
+
 func validUTF8Prompt(prompt string) string {
 	return strings.ToValidUTF8(prompt, "\uFFFD")
 }

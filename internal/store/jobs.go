@@ -128,6 +128,17 @@ func (s *Store) FinishJob(ctx context.Context, id int64, status model.JobStatus,
 // scheduling. A pending finish represents a delayed retry rather than a
 // terminal result.
 func (s *Store) FinishJobDetailed(ctx context.Context, id int64, finish model.JobFinish) error {
+	_, err := s.finishJobDetailed(ctx, id, finish, false)
+	return err
+}
+
+// FinishRunningJobDetailed updates a job only if it is still running. Queue
+// workers use this to avoid overwriting a newer superseded/canceled state.
+func (s *Store) FinishRunningJobDetailed(ctx context.Context, id int64, finish model.JobFinish) (bool, error) {
+	return s.finishJobDetailed(ctx, id, finish, true)
+}
+
+func (s *Store) finishJobDetailed(ctx context.Context, id int64, finish model.JobFinish, requireRunning bool) (bool, error) {
 	status := finish.Status
 	if status == "" {
 		status = model.JobFailed
@@ -151,14 +162,27 @@ func (s *Store) FinishJobDetailed(ctx context.Context, id int64, finish model.Jo
 		finishedAt = ""
 		startedAtSQL = "NULL"
 	}
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE jobs SET status=?, error=?, error_type=?, retryable=?, next_attempt_at=?,
-		   started_at=`+startedAtSQL+`, finished_at=? WHERE id=?`,
-		string(status), finish.Error, string(errorType), retryable, nextAttempt, finishedAt, id)
-	if err != nil {
-		return fmt.Errorf("finish job: %w", err)
+	where := "WHERE id=?"
+	args := []any{string(status), finish.Error, string(errorType), retryable, nextAttempt, finishedAt, id}
+	if requireRunning {
+		where += " AND status=?"
+		args = append(args, string(model.JobRunning))
 	}
-	return nil
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE jobs SET status=?, error=?, error_type=?, retryable=?, next_attempt_at=?,
+		   started_at=`+startedAtSQL+`, finished_at=? `+where,
+		args...)
+	if err != nil {
+		return false, fmt.Errorf("finish job: %w", err)
+	}
+	if requireRunning {
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return false, fmt.Errorf("finish job rows affected: %w", err)
+		}
+		return affected > 0, nil
+	}
+	return true, nil
 }
 
 // RerunJob creates a fresh pending job from an existing job payload. The new
@@ -410,6 +434,17 @@ func (s *Store) JobStatsFiltered(ctx context.Context, filter model.JobFilter) (m
 	if err := rows.Err(); err != nil {
 		return model.JobStats{}, fmt.Errorf("iterate job stats: %w", err)
 	}
+	retryableWhere, retryableArgs := jobFilterWhere(filter)
+	retryableClause := "j.status=? AND COALESCE(j.retryable,0) != 0"
+	retryableArgs = append(retryableArgs, string(model.JobPending))
+	if retryableWhere == "" {
+		retryableWhere = "WHERE " + retryableClause
+	} else {
+		retryableWhere += " AND " + retryableClause
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs j `+retryableWhere, retryableArgs...).Scan(&stats.RetryablePending); err != nil {
+		return model.JobStats{}, fmt.Errorf("retryable pending job stats: %w", err)
+	}
 	return stats, nil
 }
 
@@ -484,6 +519,24 @@ WHERE j.id=?`, id)
 	}
 	out[0].Logs = logs
 	out[0].LogCount = len(logs)
+	return &out[0], nil
+}
+
+// LatestFailedJobView returns the newest failed job summary for readiness and
+// diagnostics. It omits the full log timeline to keep health responses small.
+func (s *Store) LatestFailedJobView(ctx context.Context) (*model.JobView, error) {
+	rows, err := s.db.QueryContext(ctx, jobViewSelect("WHERE j.status=?")+`
+		 ORDER BY page.created_at DESC, page.id DESC`, string(model.JobFailed), 1, 0)
+	if err != nil {
+		return nil, fmt.Errorf("latest failed job view: %w", err)
+	}
+	out, err := scanJobViewRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
 	return &out[0], nil
 }
 

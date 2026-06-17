@@ -49,6 +49,7 @@ const pullRequestBody = `{
 	"action":"opened",
 	"number":12,
 	"pull_request":{
+		"user":{"username":"dev-a"},
 		"base":{"ref":"main"},
 		"head":{"ref":"feat","sha":"abc123"}
 	},
@@ -63,6 +64,7 @@ const issueCommentPRBody = `{
 	"action":"created",
 	"issue":{
 		"number":12,
+		"user":{"username":"dev-b"},
 		"pull_request":{"merged":false}
 	},
 	"comment":{
@@ -80,6 +82,7 @@ const issueCommentNotPRBody = `{
 	"action":"created",
 	"issue":{
 		"number":7,
+		"user":{"username":"dev-c"},
 		"pull_request":null
 	},
 	"comment":{
@@ -106,6 +109,9 @@ func TestParsePullRequest(t *testing.T) {
 	want := model.PRRef{Owner: "alice", Repo: "repo", Number: 12}
 	if ev.PR != want {
 		t.Errorf("PR = %+v, want %+v", ev.PR, want)
+	}
+	if ev.Author != "dev-a" {
+		t.Errorf("Author = %q, want dev-a", ev.Author)
 	}
 	if ev.BaseRef != "main" {
 		t.Errorf("BaseRef = %q, want main", ev.BaseRef)
@@ -164,6 +170,9 @@ func TestParseIssueCommentIsPR(t *testing.T) {
 	}
 	if ev.CommentUser != "bob" {
 		t.Errorf("CommentUser = %q, want bob", ev.CommentUser)
+	}
+	if ev.Author != "dev-b" {
+		t.Errorf("Author = %q, want dev-b", ev.Author)
 	}
 }
 
@@ -288,6 +297,44 @@ func TestServerInvalidSignatureRejected(t *testing.T) {
 	}
 	if called {
 		t.Errorf("OnEvent must not be called when signature is invalid")
+	}
+}
+
+func TestServerDynamicSecret(t *testing.T) {
+	secret := "old-secret"
+	called := 0
+	h := NewHandlerWithSecretFunc(func() string { return secret }, func(_ context.Context, _ *model.WebhookEvent) error {
+		called++
+		return nil
+	})
+	srv := httptest.NewServer(h.Routes())
+	defer srv.Close()
+
+	body := []byte(pullRequestBody)
+	post := func(sigSecret string) int {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhook", strings.NewReader(string(body)))
+		req.Header.Set(headerEvent, "pull_request")
+		req.Header.Set(headerSignature, sign(body, sigSecret))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if status := post("old-secret"); status != http.StatusOK {
+		t.Fatalf("old secret status = %d, want 200", status)
+	}
+	secret = "new-secret"
+	if status := post("old-secret"); status != http.StatusUnauthorized {
+		t.Fatalf("old secret after update status = %d, want 401", status)
+	}
+	if status := post("new-secret"); status != http.StatusOK {
+		t.Fatalf("new secret status = %d, want 200", status)
+	}
+	if called != 2 {
+		t.Fatalf("called = %d, want 2", called)
 	}
 }
 

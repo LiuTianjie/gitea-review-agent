@@ -2,27 +2,31 @@ package console
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
-	_ "embed"
+	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/turning4th/codex-gitea/internal/config"
 	"github.com/turning4th/codex-gitea/internal/model"
 )
 
-// indexHTML is the single-page console UI, embedded so the binary is self
-// contained and works offline (no CDN dependencies).
+// consoleDist embeds the Vite-built React console so the service remains a
+// single self-contained binary at runtime.
 //
-//go:embed static/index.html
-var indexHTML []byte
+//go:embed all:static/dist
+var consoleDist embed.FS
 
 // StatusFunc reports codex auth status. The orchestrator injects
 // codex.Runner.Status; tests inject a stub. A nil StatusFunc means "not wired".
@@ -34,6 +38,8 @@ type ConfigProvider func() *config.Config
 
 type SettingsApplyFunc func(context.Context, map[string]string) error
 
+type SkillGeneratorFunc func(context.Context, model.SkillGenerationInput) (string, error)
+
 // Console serves the authenticated admin panel and its JSON API.
 type Console struct {
 	store           model.Store
@@ -43,11 +49,14 @@ type Console struct {
 	statusFns       map[string]StatusFunc
 	statusProvider  StatusProvider
 	onSettingsApply SettingsApplyFunc
+	skillGenerator  SkillGeneratorFunc
+	skillTasksMu    sync.Mutex
+	skillTasks      map[string]*skillGenerationTask
 }
 
 // New builds a Console. codexHome is the directory where auth.json uploads are written.
 func New(store model.Store, cfg *config.Config, codexHome string, statusArgs ...any) *Console {
-	c := &Console{store: store, cfg: cfg, codexHome: codexHome, statusFns: map[string]StatusFunc{}}
+	c := &Console{store: store, cfg: cfg, codexHome: codexHome, statusFns: map[string]StatusFunc{}, skillTasks: map[string]*skillGenerationTask{}}
 	for _, arg := range statusArgs {
 		switch v := arg.(type) {
 		case StatusFunc:
@@ -62,6 +71,8 @@ func New(store model.Store, cfg *config.Config, codexHome string, statusArgs ...
 			c.configProvider = v
 		case SettingsApplyFunc:
 			c.onSettingsApply = v
+		case SkillGeneratorFunc:
+			c.skillGenerator = v
 		}
 	}
 	return c
@@ -93,6 +104,9 @@ func (c *Console) currentStatusFns() map[string]StatusFunc {
 // paths so the page's fetch() calls resolve correctly.
 func (c *Console) Routes() http.Handler {
 	mux := http.NewServeMux()
+	if assets, err := fs.Sub(consoleDist, "static/dist"); err == nil {
+		mux.Handle("GET /admin/assets/", http.StripPrefix("/admin/", http.FileServer(http.FS(assets))))
+	}
 	mux.HandleFunc("GET /admin/", c.handleIndex)
 	mux.HandleFunc("GET /admin/api/settings", c.handleGetSettings)
 	mux.HandleFunc("POST /admin/api/settings", c.handlePostSettings)
@@ -107,6 +121,11 @@ func (c *Console) Routes() http.Handler {
 	mux.HandleFunc("POST /admin/api/analytics/reports", c.handleCreateAnalysisReport)
 	mux.HandleFunc("GET /admin/api/analytics/reports/latest", c.handleLatestAnalysisReport)
 	mux.HandleFunc("GET /admin/api/analytics/reports", c.handleListAnalysisReports)
+	mux.HandleFunc("GET /admin/api/analytics/trend", c.handleAnalysisTrend)
+	mux.HandleFunc("GET /admin/api/skills/projects", c.handleSkillProjects)
+	mux.HandleFunc("GET /admin/api/skills/{owner}/{repo}", c.handleSkillDetail)
+	mux.HandleFunc("POST /admin/api/skills/{owner}/{repo}/generate", c.handleSkillGenerate)
+	mux.HandleFunc("GET /admin/api/skills/{owner}/{repo}/generate/{taskID}", c.handleSkillGenerateStatus)
 
 	return consoleAuthMiddleware(func() string {
 		if cfg := c.currentConfig(); cfg != nil {
@@ -116,11 +135,22 @@ func (c *Console) Routes() http.Handler {
 	}, mux)
 }
 
+func (c *Console) PublicRoutes() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /skills/{owner}/{repo}/SKILL.md", c.handlePublicSkillDownload)
+	return mux
+}
+
 // ---------- handlers ----------
 
 func (c *Console) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(indexHTML)
+	data, err := consoleDist.ReadFile("static/dist/index.html")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "console assets are not built")
+		return
+	}
+	w.Write(data)
 }
 
 // handleGetSettings returns all settings with secret values redacted. Secret
@@ -289,6 +319,7 @@ func (c *Console) handleEffectiveConfig(w http.ResponseWriter, r *http.Request) 
 		"gitea_url":              cfg.GiteaURL,
 		"gitea_token_set":        strings.TrimSpace(cfg.GiteaToken) != "",
 		"webhook_secret_set":     strings.TrimSpace(cfg.WebhookSecret) != "",
+		"gitea_timeout":          cfg.GiteaTimeout.String(),
 		"model":                  cfg.Model,
 		"codex_auth_mode":        cfg.CodexAuthMode,
 		"codex_sandbox_mode":     cfg.CodexSandbox,
@@ -310,7 +341,7 @@ func (c *Console) handleEffectiveConfig(w http.ResponseWriter, r *http.Request) 
 		"trigger_keywords":       strings.Join(cfg.TriggerKeywords, ","),
 		"repo_allowlist":         strings.Join(cfg.RepoAllowlist, ","),
 		"config_source":          os.Getenv("CONFIG_SOURCE"),
-		"runtime_reload_note":    "保存设置会写入数据库；后续 review 会使用 reviewer 相关新值，监听地址和 worker 并发仍需重启服务。",
+		"runtime_reload_note":    "保存设置会写入数据库；后续 review 会热生效 Gitea token/timeout、Webhook 密钥、触发关键词、仓库白名单和 reviewer 配置；监听地址和 worker 并发仍需重启服务。",
 	})
 }
 
@@ -352,16 +383,17 @@ type jobsResponse struct {
 }
 
 type jobStatsView struct {
-	TotalJobs    int     `json:"total_jobs"`
-	ReviewJobs   int     `json:"review_jobs"`
-	ReviewedJobs int     `json:"reviewed_jobs"`
-	Done         int     `json:"done"`
-	Failed       int     `json:"failed"`
-	Running      int     `json:"running"`
-	Pending      int     `json:"pending"`
-	Superseded   int     `json:"superseded"`
-	Canceled     int     `json:"canceled"`
-	SuccessRate  float64 `json:"success_rate"`
+	TotalJobs        int     `json:"total_jobs"`
+	ReviewJobs       int     `json:"review_jobs"`
+	ReviewedJobs     int     `json:"reviewed_jobs"`
+	Done             int     `json:"done"`
+	Failed           int     `json:"failed"`
+	Running          int     `json:"running"`
+	Pending          int     `json:"pending"`
+	Superseded       int     `json:"superseded"`
+	Canceled         int     `json:"canceled"`
+	RetryablePending int     `json:"retryable_pending"`
+	SuccessRate      float64 `json:"success_rate"`
 }
 
 func (c *Console) handleJobs(w http.ResponseWriter, r *http.Request) {
@@ -546,16 +578,17 @@ func toJobStatsView(stats model.JobStats) jobStatsView {
 		successRate = float64(stats.Done) / float64(completed)
 	}
 	return jobStatsView{
-		TotalJobs:    stats.TotalJobs,
-		ReviewJobs:   stats.ReviewJobs,
-		ReviewedJobs: stats.ReviewedJobs,
-		Done:         stats.Done,
-		Failed:       stats.Failed,
-		Running:      stats.Running,
-		Pending:      stats.Pending,
-		Superseded:   stats.Superseded,
-		Canceled:     stats.Canceled,
-		SuccessRate:  successRate,
+		TotalJobs:        stats.TotalJobs,
+		ReviewJobs:       stats.ReviewJobs,
+		ReviewedJobs:     stats.ReviewedJobs,
+		Done:             stats.Done,
+		Failed:           stats.Failed,
+		Running:          stats.Running,
+		Pending:          stats.Pending,
+		Superseded:       stats.Superseded,
+		Canceled:         stats.Canceled,
+		RetryablePending: stats.RetryablePending,
+		SuccessRate:      successRate,
 	}
 }
 
@@ -564,6 +597,17 @@ type analysisReportView struct {
 	CreatedAt string                `json:"created_at"`
 	GiteaURL  string                `json:"gitea_url"`
 	Summary   model.AnalysisSummary `json:"summary"`
+}
+
+type analysisTrendPointView struct {
+	FinishedAt           string  `json:"finished_at"`
+	TotalReviewRuns      int     `json:"total_review_runs"`
+	SuccessfulReviewRuns int     `json:"successful_review_runs"`
+	FailedReviewRuns     int     `json:"failed_review_runs"`
+	SuccessRate          float64 `json:"success_rate"`
+	TotalFindings        int     `json:"total_findings"`
+	OpenFindings         int     `json:"open_findings"`
+	HighCriticalOpen     int     `json:"high_critical_open"`
 }
 
 func (c *Console) handleCreateAnalysisReport(w http.ResponseWriter, r *http.Request) {
@@ -605,6 +649,332 @@ func (c *Console) handleListAnalysisReports(w http.ResponseWriter, r *http.Reque
 		out = append(out, c.toAnalysisReportView(report))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "reports": out})
+}
+
+func (c *Console) handleAnalysisTrend(w http.ResponseWriter, r *http.Request) {
+	limit := parsePositiveInt(r.URL.Query().Get("limit"), 12)
+	points, err := c.store.BuildAnalysisTrend(r.Context(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]analysisTrendPointView, 0, len(points))
+	for _, point := range points {
+		item := analysisTrendPointView{
+			TotalReviewRuns: point.TotalReviewRuns, SuccessfulReviewRuns: point.SuccessfulReviewRuns,
+			FailedReviewRuns: point.FailedReviewRuns, SuccessRate: point.SuccessRate,
+			TotalFindings: point.TotalFindings, OpenFindings: point.OpenFindings,
+			HighCriticalOpen: point.HighCriticalOpen,
+		}
+		if !point.FinishedAt.IsZero() {
+			item.FinishedAt = point.FinishedAt.Format(timeLayout)
+		}
+		out = append(out, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "points": out})
+}
+
+type projectSkillSummaryView struct {
+	Owner            string `json:"owner"`
+	Repo             string `json:"repo"`
+	Slug             string `json:"slug"`
+	PullRequests     int    `json:"pull_requests"`
+	ReviewRuns       int    `json:"review_runs"`
+	Findings         int    `json:"findings"`
+	OpenFindings     int    `json:"open_findings"`
+	HighCriticalOpen int    `json:"high_critical_open"`
+	SkillVersion     int    `json:"skill_version"`
+	SkillUpdatedAt   string `json:"skill_updated_at"`
+}
+
+type projectSkillView struct {
+	Owner              string                    `json:"owner"`
+	Repo               string                    `json:"repo"`
+	Slug               string                    `json:"slug"`
+	Title              string                    `json:"title"`
+	Content            string                    `json:"content"`
+	Version            int                       `json:"version"`
+	SourceFindingCount int                       `json:"source_finding_count"`
+	CreatedAt          string                    `json:"created_at"`
+	UpdatedAt          string                    `json:"updated_at"`
+	Context            model.ProjectSkillContext `json:"context"`
+}
+
+type skillGenerationTask struct {
+	ID         string
+	Owner      string
+	Repo       string
+	Status     string
+	Error      string
+	Skill      *projectSkillView
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	FinishedAt *time.Time
+}
+
+type skillGenerationTaskView struct {
+	ID         string            `json:"id"`
+	Owner      string            `json:"owner"`
+	Repo       string            `json:"repo"`
+	Status     string            `json:"status"`
+	Error      string            `json:"error,omitempty"`
+	Skill      *projectSkillView `json:"skill,omitempty"`
+	CreatedAt  string            `json:"created_at"`
+	UpdatedAt  string            `json:"updated_at"`
+	FinishedAt string            `json:"finished_at,omitempty"`
+}
+
+func (c *Console) handleSkillProjects(w http.ResponseWriter, r *http.Request) {
+	items, err := c.store.ListProjectSkillSummaries(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]projectSkillSummaryView, 0, len(items))
+	for _, item := range items {
+		out = append(out, toProjectSkillSummaryView(item))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "projects": out})
+}
+
+func (c *Console) handleSkillDetail(w http.ResponseWriter, r *http.Request) {
+	owner, repo := r.PathValue("owner"), r.PathValue("repo")
+	ctx, err := c.store.BuildProjectSkillContext(r.Context(), owner, repo)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	skill, err := c.store.GetProjectSkill(r.Context(), owner, repo)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "skill": toProjectSkillView(skill, ctx)})
+}
+
+func (c *Console) handleSkillGenerate(w http.ResponseWriter, r *http.Request) {
+	if c.skillGenerator == nil {
+		writeError(w, http.StatusServiceUnavailable, "codex skill generator is not configured")
+		return
+	}
+	owner, repo := r.PathValue("owner"), r.PathValue("repo")
+
+	if task := c.runningSkillTask(owner, repo); task != nil {
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "task": toSkillGenerationTaskView(task)})
+		return
+	}
+
+	ctx, err := c.store.BuildProjectSkillContext(r.Context(), owner, repo)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if ctx.Findings == 0 {
+		writeError(w, http.StatusBadRequest, "no findings for project")
+		return
+	}
+	existing, err := c.store.GetProjectSkill(r.Context(), owner, repo)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	task := c.createSkillTask(owner, repo)
+	go c.runSkillGenerationTask(task.ID, ctx, existing)
+
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "task": toSkillGenerationTaskView(task)})
+}
+
+func (c *Console) handleSkillGenerateStatus(w http.ResponseWriter, r *http.Request) {
+	owner, repo, taskID := r.PathValue("owner"), r.PathValue("repo"), r.PathValue("taskID")
+	task := c.getSkillTask(taskID)
+	if task == nil || task.Owner != owner || task.Repo != repo {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "task": toSkillGenerationTaskView(task)})
+}
+
+func (c *Console) createSkillTask(owner, repo string) *skillGenerationTask {
+	c.skillTasksMu.Lock()
+	defer c.skillTasksMu.Unlock()
+	now := time.Now()
+	c.pruneSkillTasksLocked(now)
+	task := &skillGenerationTask{ID: newTaskID(), Owner: owner, Repo: repo, Status: "running", CreatedAt: now, UpdatedAt: now}
+	c.skillTasks[task.ID] = task
+	return cloneSkillGenerationTask(task)
+}
+
+func (c *Console) runningSkillTask(owner, repo string) *skillGenerationTask {
+	c.skillTasksMu.Lock()
+	defer c.skillTasksMu.Unlock()
+	for _, task := range c.skillTasks {
+		if task.Owner == owner && task.Repo == repo && task.Status == "running" {
+			return cloneSkillGenerationTask(task)
+		}
+	}
+	return nil
+}
+
+func (c *Console) getSkillTask(id string) *skillGenerationTask {
+	c.skillTasksMu.Lock()
+	defer c.skillTasksMu.Unlock()
+	task := c.skillTasks[id]
+	return cloneSkillGenerationTask(task)
+}
+
+func (c *Console) updateSkillTask(id string, update func(*skillGenerationTask)) {
+	c.skillTasksMu.Lock()
+	defer c.skillTasksMu.Unlock()
+	if task := c.skillTasks[id]; task != nil {
+		update(task)
+		task.UpdatedAt = time.Now()
+	}
+}
+
+func (c *Console) runSkillGenerationTask(taskID string, ctx model.ProjectSkillContext, existing *model.ProjectSkill) {
+	runCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	content, err := c.skillGenerator(runCtx, model.SkillGenerationInput{Context: ctx, Existing: existing})
+	if err == nil {
+		content = normalizeSkillContent(content)
+		skill := &model.ProjectSkill{
+			Owner: ctx.Owner, Repo: ctx.Repo, Slug: ctx.Slug, Title: skillTitle(ctx.Owner, ctx.Repo, content),
+			Content: content, SourceFindingCount: ctx.Findings,
+		}
+		if upsertErr := c.store.UpsertProjectSkill(runCtx, skill); upsertErr != nil {
+			err = upsertErr
+		}
+	}
+	var skillView *projectSkillView
+	if err == nil {
+		saved, getErr := c.store.GetProjectSkill(runCtx, ctx.Owner, ctx.Repo)
+		if getErr != nil {
+			err = getErr
+		} else {
+			view := toProjectSkillView(saved, ctx)
+			skillView = &view
+		}
+	}
+	finished := time.Now()
+	c.updateSkillTask(taskID, func(task *skillGenerationTask) {
+		task.FinishedAt = &finished
+		if err != nil {
+			task.Status = "failed"
+			task.Error = err.Error()
+			return
+		}
+		task.Status = "done"
+		task.Skill = skillView
+	})
+}
+
+func (c *Console) pruneSkillTasksLocked(now time.Time) {
+	for id, task := range c.skillTasks {
+		if task.Status != "running" && now.Sub(task.UpdatedAt) > 24*time.Hour {
+			delete(c.skillTasks, id)
+		}
+	}
+}
+
+func cloneSkillGenerationTask(task *skillGenerationTask) *skillGenerationTask {
+	if task == nil {
+		return nil
+	}
+	out := *task
+	return &out
+}
+
+func toSkillGenerationTaskView(task *skillGenerationTask) skillGenerationTaskView {
+	out := skillGenerationTaskView{
+		ID: task.ID, Owner: task.Owner, Repo: task.Repo, Status: task.Status, Error: task.Error, Skill: task.Skill,
+	}
+	if !task.CreatedAt.IsZero() {
+		out.CreatedAt = task.CreatedAt.Format(timeLayout)
+	}
+	if !task.UpdatedAt.IsZero() {
+		out.UpdatedAt = task.UpdatedAt.Format(timeLayout)
+	}
+	if task.FinishedAt != nil && !task.FinishedAt.IsZero() {
+		out.FinishedAt = task.FinishedAt.Format(timeLayout)
+	}
+	return out
+}
+
+func newTaskID() string {
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	return strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
+func (c *Console) handlePublicSkillDownload(w http.ResponseWriter, r *http.Request) {
+	skill, err := c.store.GetProjectSkill(r.Context(), r.PathValue("owner"), r.PathValue("repo"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if skill == nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="SKILL.md"`)
+	_, _ = w.Write([]byte(skill.Content))
+}
+
+func toProjectSkillSummaryView(item model.ProjectSkillSummary) projectSkillSummaryView {
+	out := projectSkillSummaryView{
+		Owner: item.Owner, Repo: item.Repo, Slug: item.Slug,
+		PullRequests: item.PullRequests, ReviewRuns: item.ReviewRuns, Findings: item.Findings,
+		OpenFindings: item.OpenFindings, HighCriticalOpen: item.HighCriticalOpen,
+		SkillVersion: item.SkillVersion,
+	}
+	if !item.SkillUpdatedAt.IsZero() {
+		out.SkillUpdatedAt = item.SkillUpdatedAt.Format(timeLayout)
+	}
+	return out
+}
+
+func toProjectSkillView(skill *model.ProjectSkill, ctx model.ProjectSkillContext) projectSkillView {
+	out := projectSkillView{Owner: ctx.Owner, Repo: ctx.Repo, Slug: ctx.Slug, Context: ctx}
+	if skill == nil {
+		return out
+	}
+	out.Owner, out.Repo, out.Slug, out.Title = skill.Owner, skill.Repo, skill.Slug, skill.Title
+	out.Content, out.Version, out.SourceFindingCount = skill.Content, skill.Version, skill.SourceFindingCount
+	if !skill.CreatedAt.IsZero() {
+		out.CreatedAt = skill.CreatedAt.Format(timeLayout)
+	}
+	if !skill.UpdatedAt.IsZero() {
+		out.UpdatedAt = skill.UpdatedAt.Format(timeLayout)
+	}
+	return out
+}
+
+func normalizeSkillContent(content string) string {
+	content = strings.TrimSpace(content)
+	content = strings.TrimPrefix(content, "```markdown")
+	content = strings.TrimPrefix(content, "```md")
+	content = strings.TrimPrefix(content, "```")
+	content = strings.TrimSuffix(content, "```")
+	content = strings.TrimSpace(content)
+	if !strings.HasPrefix(content, "---") {
+		content = "---\nname: project-defect-skill\ndescription: Use this skill when working on this project to avoid recurring defects found by review agents.\n---\n\n" + content
+	}
+	return content + "\n"
+}
+
+func skillTitle(owner, repo, content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "# ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "# "))
+		}
+	}
+	return owner + "/" + repo + " defect-prevention skill"
 }
 
 func (c *Console) toAnalysisReportView(report model.AnalysisReport) analysisReportView {
