@@ -8,8 +8,23 @@ import (
 )
 
 type pullResponse struct {
-	State  string `json:"state"`
-	Merged bool   `json:"merged"`
+	State  string   `json:"state"`
+	Merged bool     `json:"merged"`
+	User   userInfo `json:"user"`
+	Poster userInfo `json:"poster"`
+}
+
+func (r pullResponse) author() string {
+	if r.User.Username != "" {
+		return r.User.Username
+	}
+	if r.User.Login != "" {
+		return r.User.Login
+	}
+	if r.Poster.Username != "" {
+		return r.Poster.Username
+	}
+	return r.Poster.Login
 }
 
 // GetPullRequestStatus returns the live PR state. Review submission is only
@@ -20,5 +35,5 @@ func (c *Client) GetPullRequestStatus(ctx context.Context, pr model.PRRef) (mode
 	if err := c.doJSON(ctx, "GET", path, nil, &resp); err != nil {
 		return model.PullRequestStatus{}, err
 	}
-	return model.PullRequestStatus{State: resp.State, Merged: resp.Merged}, nil
+	return model.PullRequestStatus{State: resp.State, Merged: resp.Merged, Author: resp.author()}, nil
 }

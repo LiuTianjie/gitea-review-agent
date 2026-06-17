@@ -600,6 +600,7 @@ type analysisReportView struct {
 }
 
 type analysisTrendPointView struct {
+	Day                  string  `json:"day"`
 	FinishedAt           string  `json:"finished_at"`
 	TotalReviewRuns      int     `json:"total_review_runs"`
 	SuccessfulReviewRuns int     `json:"successful_review_runs"`
@@ -661,7 +662,7 @@ func (c *Console) handleAnalysisTrend(w http.ResponseWriter, r *http.Request) {
 	out := make([]analysisTrendPointView, 0, len(points))
 	for _, point := range points {
 		item := analysisTrendPointView{
-			TotalReviewRuns: point.TotalReviewRuns, SuccessfulReviewRuns: point.SuccessfulReviewRuns,
+			Day: point.Day, TotalReviewRuns: point.TotalReviewRuns, SuccessfulReviewRuns: point.SuccessfulReviewRuns,
 			FailedReviewRuns: point.FailedReviewRuns, SuccessRate: point.SuccessRate,
 			TotalFindings: point.TotalFindings, OpenFindings: point.OpenFindings,
 			HighCriticalOpen: point.HighCriticalOpen,

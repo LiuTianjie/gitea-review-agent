@@ -61,35 +61,36 @@ func (s *Store) ListAnalysisReports(ctx context.Context, limit int) ([]model.Ana
 
 func (s *Store) BuildAnalysisTrend(ctx context.Context, limit int) ([]model.AnalysisTrendPoint, error) {
 	if limit <= 0 || limit > 100 {
-		limit = 12
+		limit = 14
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT COALESCE(finished_at, started_at)
+		`SELECT substr(COALESCE(finished_at, started_at), 1, 10) AS day
 		 FROM review_runs
 		 WHERE status IN (?, ?)
 		   AND COALESCE(finished_at, started_at, '') <> ''
-		 ORDER BY COALESCE(finished_at, started_at) DESC, id DESC
+		 GROUP BY day
+		 ORDER BY day DESC
 		 LIMIT ?`, string(model.ReviewRunDone), string(model.ReviewRunFailed), limit)
 	if err != nil {
-		return nil, fmt.Errorf("analysis trend cutoffs: %w", err)
+		return nil, fmt.Errorf("analysis trend days: %w", err)
 	}
 	defer rows.Close()
-	var cutoffs []string
+	var days []string
 	for rows.Next() {
-		var cutoff string
-		if err := rows.Scan(&cutoff); err != nil {
-			return nil, fmt.Errorf("scan analysis trend cutoff: %w", err)
+		var day string
+		if err := rows.Scan(&day); err != nil {
+			return nil, fmt.Errorf("scan analysis trend day: %w", err)
 		}
-		cutoffs = append(cutoffs, cutoff)
+		days = append(days, day)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate analysis trend cutoffs: %w", err)
+		return nil, fmt.Errorf("iterate analysis trend days: %w", err)
 	}
-	sort.Slice(cutoffs, func(i, j int) bool { return cutoffs[i] < cutoffs[j] })
+	sort.Strings(days)
 
-	out := make([]model.AnalysisTrendPoint, 0, len(cutoffs))
-	for _, cutoff := range cutoffs {
-		point, err := s.analysisTrendPoint(ctx, cutoff)
+	out := make([]model.AnalysisTrendPoint, 0, len(days))
+	for _, day := range days {
+		point, err := s.analysisTrendPoint(ctx, day)
 		if err != nil {
 			return nil, err
 		}
@@ -98,9 +99,10 @@ func (s *Store) BuildAnalysisTrend(ctx context.Context, limit int) ([]model.Anal
 	return out, nil
 }
 
-func (s *Store) analysisTrendPoint(ctx context.Context, cutoff string) (model.AnalysisTrendPoint, error) {
+func (s *Store) analysisTrendPoint(ctx context.Context, day string) (model.AnalysisTrendPoint, error) {
 	var point model.AnalysisTrendPoint
-	point.FinishedAt = parseTime(cutoff)
+	point.Day = day
+	point.FinishedAt = parseTime(day + "T00:00:00Z")
 	row := s.db.QueryRowContext(ctx,
 		`SELECT
 		   COUNT(*),
@@ -109,9 +111,9 @@ func (s *Store) analysisTrendPoint(ctx context.Context, cutoff string) (model.An
 		 FROM review_runs
 		 WHERE status IN (?, ?)
 		   AND COALESCE(finished_at, started_at, '') <> ''
-		   AND COALESCE(finished_at, started_at) <= ?`,
+		   AND substr(COALESCE(finished_at, started_at), 1, 10) = ?`,
 		string(model.ReviewRunDone), string(model.ReviewRunFailed),
-		string(model.ReviewRunDone), string(model.ReviewRunFailed), cutoff)
+		string(model.ReviewRunDone), string(model.ReviewRunFailed), day)
 	if err := row.Scan(&point.TotalReviewRuns, &point.SuccessfulReviewRuns, &point.FailedReviewRuns); err != nil {
 		return model.AnalysisTrendPoint{}, fmt.Errorf("scan analysis trend runs: %w", err)
 	}
@@ -129,8 +131,8 @@ func (s *Store) analysisTrendPoint(ctx context.Context, cutoff string) (model.An
 		 FROM findings f
 		 JOIN review_runs rr ON rr.id=f.review_run_id
 		 WHERE COALESCE(rr.finished_at, rr.started_at, '') <> ''
-		   AND COALESCE(rr.finished_at, rr.started_at) <= ?`,
-		string(model.SeverityHigh), string(model.SeverityCritical), cutoff)
+		   AND substr(COALESCE(rr.finished_at, rr.started_at), 1, 10) = ?`,
+		string(model.SeverityHigh), string(model.SeverityCritical), day)
 	if err := row.Scan(&point.TotalFindings, &point.OpenFindings, &point.HighCriticalOpen); err != nil {
 		return model.AnalysisTrendPoint{}, fmt.Errorf("scan analysis trend findings: %w", err)
 	}
@@ -341,21 +343,33 @@ func (s *Store) fillDeveloperSummary(ctx context.Context, summary *model.Analysi
 		}
 		return items[name]
 	}
+	fallbackAuthors, err := s.jobAuthorFallbacks(ctx)
+	if err != nil {
+		return err
+	}
+	developerForPull := func(owner, repo string, number int, author string) string {
+		author = strings.TrimSpace(author)
+		if author != "" {
+			return author
+		}
+		return fallbackAuthors[pullAuthorKey(owner, repo, number)]
+	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT COALESCE(NULLIF(TRIM(author),''),'unknown'), COUNT(*)
-		 FROM pulls GROUP BY COALESCE(NULLIF(TRIM(author),''),'unknown')`)
+		`SELECT COALESCE(r.owner,''), COALESCE(r.name,''), p.number, COALESCE(p.author,'')
+		 FROM pulls p
+		 JOIN repos r ON r.id=p.repo_id`)
 	if err != nil {
 		return fmt.Errorf("developer pulls summary: %w", err)
 	}
 	for rows.Next() {
-		var developer string
-		var n int
-		if err := rows.Scan(&developer, &n); err != nil {
+		var owner, repo, author string
+		var number int
+		if err := rows.Scan(&owner, &repo, &number, &author); err != nil {
 			rows.Close()
 			return fmt.Errorf("scan developer pulls summary: %w", err)
 		}
-		get(developer).PullRequests += n
+		get(developerForPull(owner, repo, number, author)).PullRequests++
 	}
 	if err := rows.Close(); err != nil {
 		return fmt.Errorf("close developer pulls summary: %w", err)
@@ -365,21 +379,23 @@ func (s *Store) fillDeveloperSummary(ctx context.Context, summary *model.Analysi
 	}
 
 	rows, err = s.db.QueryContext(ctx,
-		`SELECT COALESCE(NULLIF(TRIM(p.author),''),'unknown'), rr.status, COUNT(*)
+		`SELECT COALESCE(r.owner,''), COALESCE(r.name,''), p.number, COALESCE(p.author,''), rr.status, COUNT(*)
 		 FROM review_runs rr
 		 JOIN pulls p ON p.id=rr.pull_id
-		 GROUP BY COALESCE(NULLIF(TRIM(p.author),''),'unknown'), rr.status`)
+		 JOIN repos r ON r.id=p.repo_id
+		 GROUP BY r.owner, r.name, p.number, p.author, rr.status`)
 	if err != nil {
 		return fmt.Errorf("developer review runs summary: %w", err)
 	}
 	for rows.Next() {
-		var developer, status string
+		var owner, repo, author, status string
+		var number int
 		var n int
-		if err := rows.Scan(&developer, &status, &n); err != nil {
+		if err := rows.Scan(&owner, &repo, &number, &author, &status, &n); err != nil {
 			rows.Close()
 			return fmt.Errorf("scan developer review runs summary: %w", err)
 		}
-		item := get(developer)
+		item := get(developerForPull(owner, repo, number, author))
 		item.ReviewRuns += n
 		switch model.ReviewRunStatus(status) {
 		case model.ReviewRunDone:
@@ -396,21 +412,24 @@ func (s *Store) fillDeveloperSummary(ctx context.Context, summary *model.Analysi
 	}
 
 	rows, err = s.db.QueryContext(ctx,
-		`SELECT COALESCE(NULLIF(TRIM(p.author),''),'unknown'), COALESCE(f.status,'open'), COALESCE(f.severity,'info'), COUNT(*)
+		`SELECT COALESCE(r.owner,''), COALESCE(r.name,''), p.number, COALESCE(p.author,''),
+		        COALESCE(f.status,'open'), COALESCE(f.severity,'info'), COUNT(*)
 		 FROM findings f
 		 JOIN pulls p ON p.id=f.pull_id
-		 GROUP BY COALESCE(NULLIF(TRIM(p.author),''),'unknown'), COALESCE(f.status,'open'), COALESCE(f.severity,'info')`)
+		 JOIN repos r ON r.id=p.repo_id
+		 GROUP BY r.owner, r.name, p.number, p.author, COALESCE(f.status,'open'), COALESCE(f.severity,'info')`)
 	if err != nil {
 		return fmt.Errorf("developer findings summary: %w", err)
 	}
 	for rows.Next() {
-		var developer, status, severity string
+		var owner, repo, author, status, severity string
+		var number int
 		var n int
-		if err := rows.Scan(&developer, &status, &severity, &n); err != nil {
+		if err := rows.Scan(&owner, &repo, &number, &author, &status, &severity, &n); err != nil {
 			rows.Close()
 			return fmt.Errorf("scan developer findings summary: %w", err)
 		}
-		item := get(developer)
+		item := get(developerForPull(owner, repo, number, author))
 		item.Findings += n
 		if status == "open" {
 			item.OpenFindings += n
@@ -450,6 +469,92 @@ func (s *Store) fillDeveloperSummary(ctx context.Context, summary *model.Analysi
 		summary.ByDeveloper = summary.ByDeveloper[:20]
 	}
 	return nil
+}
+
+func (s *Store) jobAuthorFallbacks(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT payload FROM jobs ORDER BY id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("developer job author fallback: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return nil, fmt.Errorf("scan developer job author fallback: %w", err)
+		}
+		var ev model.WebhookEvent
+		if err := json.Unmarshal(payload, &ev); err != nil {
+			continue
+		}
+		key := pullAuthorKey(ev.PR.Owner, ev.PR.Repo, ev.PR.Number)
+		if key == "" || out[key] != "" {
+			continue
+		}
+		if author := authorFromStoredEvent(ev); author != "" {
+			out[key] = author
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate developer job author fallback: %w", err)
+	}
+	return out, nil
+}
+
+func pullAuthorKey(owner, repo string, number int) string {
+	owner = strings.TrimSpace(owner)
+	repo = strings.TrimSpace(repo)
+	if owner == "" || repo == "" || number == 0 {
+		return ""
+	}
+	return strings.ToLower(owner) + "\x00" + strings.ToLower(repo) + "\x00" + fmt.Sprint(number)
+}
+
+type storedEventUser struct {
+	Username string `json:"username"`
+	Login    string `json:"login"`
+	Name     string `json:"name"`
+}
+
+func (u storedEventUser) name() string {
+	for _, value := range []string{u.Username, u.Login, u.Name} {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func authorFromStoredEvent(ev model.WebhookEvent) string {
+	if author := strings.TrimSpace(ev.Author); author != "" {
+		return author
+	}
+	if len(ev.Raw) == 0 {
+		return ""
+	}
+	var raw struct {
+		PullRequest struct {
+			User   storedEventUser `json:"user"`
+			Poster storedEventUser `json:"poster"`
+		} `json:"pull_request"`
+		Issue struct {
+			User storedEventUser `json:"user"`
+		} `json:"issue"`
+	}
+	if err := json.Unmarshal(ev.Raw, &raw); err != nil {
+		return ""
+	}
+	for _, author := range []string{
+		raw.PullRequest.User.name(),
+		raw.PullRequest.Poster.name(),
+		raw.Issue.User.name(),
+	} {
+		if author != "" {
+			return author
+		}
+	}
+	return ""
 }
 
 func normalizeDeveloper(name string) string {

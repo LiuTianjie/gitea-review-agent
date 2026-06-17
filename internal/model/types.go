@@ -98,6 +98,7 @@ const (
 type PullRequestStatus struct {
 	State  string
 	Merged bool
+	Author string
 }
 
 // Open reports whether the PR can still accept reviews.
@@ -379,6 +380,7 @@ type AnalysisReport struct {
 }
 
 type AnalysisTrendPoint struct {
+	Day                  string    `json:"day"`
 	FinishedAt           time.Time `json:"finished_at"`
 	TotalReviewRuns      int       `json:"total_review_runs"`
 	SuccessfulReviewRuns int       `json:"successful_review_runs"`

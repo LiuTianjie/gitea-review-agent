@@ -534,22 +534,29 @@ function SkillsPanel() {
         const payload = await fetchJSON(`/admin/api/skills/${encodeURIComponent(generationTask.owner)}/${encodeURIComponent(generationTask.repo)}/generate/${encodeURIComponent(generationTask.id)}`, {}, 10000)
         if (cancelled) return
         const task = payload.task || null
-        setGenerationTask(task)
         if (task?.status === 'done') {
           if (task.skill) setDetail(task.skill)
-          await loadProjects()
-          if (!cancelled) {
-            setMessage({ ok: true, text: 'Skill 已更新' })
-            setGenerating(false)
-            setGenerationTask(null)
-          }
+          setMessage({ ok: true, text: 'Skill 已更新' })
+          setGenerating(false)
+          setGenerationTask(null)
+          loadProjects()
         } else if (task?.status === 'failed') {
           setMessage({ ok: false, text: `生成失败：${task.error || '未知错误'}` })
           setGenerating(false)
           setGenerationTask(null)
+        } else if (task?.status === 'running') {
+          setGenerationTask(task)
+        } else {
+          setMessage({ ok: false, text: '生成任务状态异常，请刷新后重试' })
+          setGenerating(false)
+          setGenerationTask(null)
         }
       } catch (error) {
-        if (!cancelled) setMessage({ ok: false, text: `轮询生成状态失败：${error.message}` })
+        if (!cancelled) {
+          setMessage({ ok: false, text: `轮询生成状态失败：${error.message}` })
+          setGenerating(false)
+          setGenerationTask(null)
+        }
       }
     }
     const timer = setInterval(poll, 2000)
@@ -562,6 +569,7 @@ function SkillsPanel() {
 
   const skill = detail || {}
   const ctx = skill.context || {}
+  const evidencePatterns = ctx.patterns || []
   const busy = loading || generating
   const downloadPath = selected ? `/skills/${encodeURIComponent(selected.owner)}/${encodeURIComponent(selected.repo)}/SKILL.md` : ''
   const origin = typeof window === 'undefined' ? '' : window.location.origin
@@ -664,24 +672,25 @@ function SkillsPanel() {
                 <pre className="command-box">{installCommand}</pre>
               </section>
 
-              <section className="subsection">
-                <div className="subsection-title">
-                  <div>
-                    <h3>证据摘要</h3>
-                    <span>生成时会把这些缺陷模式交给 Codex</span>
+              {evidencePatterns.length ? (
+                <section className="subsection">
+                  <div className="subsection-title">
+                    <div>
+                      <h3>证据摘要</h3>
+                      <span>生成时会把这些缺陷模式交给 Codex</span>
+                    </div>
                   </div>
-                </div>
-                <div className="pattern-list">
-                  {(ctx.patterns || []).slice(0, 6).map((pattern) => (
-                    <article className="pattern-card" key={`${pattern.title}-${pattern.severity}-${pattern.status}`}>
-                      <strong>{pattern.title}</strong>
-                      <span>{pattern.severity} · {pattern.status} · {pattern.count} 次</span>
-                      <small>{pattern.sample_path}{pattern.sample_line ? `:${pattern.sample_line}` : ''}</small>
-                    </article>
-                  ))}
-                  {!(ctx.patterns || []).length ? <div className="empty-state compact">暂无模式摘要</div> : null}
-                </div>
-              </section>
+                  <div className="pattern-list">
+                    {evidencePatterns.slice(0, 6).map((pattern) => (
+                      <article className="pattern-card" key={`${pattern.title}-${pattern.severity}-${pattern.status}`}>
+                        <strong>{pattern.title}</strong>
+                        <span>{pattern.severity} · {pattern.status} · {pattern.count} 次</span>
+                        <small>{pattern.sample_path}{pattern.sample_line ? `:${pattern.sample_line}` : ''}</small>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
 
               <section className="subsection">
                 <div className="subsection-title">
@@ -712,7 +721,7 @@ function AnalyticsPanel() {
     try {
       const [latestPayload, trendPayload] = await Promise.all([
         fetchJSON('/admin/api/analytics/reports/latest', {}, 10000),
-        fetchJSON('/admin/api/analytics/trend?limit=12', {}, 10000)
+        fetchJSON('/admin/api/analytics/trend?limit=14', {}, 10000)
       ])
       setReport(latestPayload.report || null)
       setTrend(trendPayload.points || [])
@@ -732,7 +741,7 @@ function AnalyticsPanel() {
     try {
       const payload = await fetchJSON('/admin/api/analytics/reports', { method: 'POST' }, 30000)
       setReport(payload.report || null)
-      const trendPayload = await fetchJSON('/admin/api/analytics/trend?limit=12', {}, 10000)
+      const trendPayload = await fetchJSON('/admin/api/analytics/trend?limit=14', {}, 10000)
       setTrend(trendPayload.points || [])
       setMessage({ ok: true, text: '分析报告已生成' })
     } catch (error) {
@@ -854,23 +863,25 @@ function AnalysisReport({ report, trend = [] }) {
 }
 
 function TrendOverview({ points }) {
-  const history = [...(points || [])].filter((item) => item?.finished_at)
-  if (history.length < 2) {
+  const history = [...(points || [])].filter((item) => item?.day || item?.finished_at)
+  if (history.length < 1) {
     return (
       <section className="subsection trend-section">
         <div className="subsection-title">
           <h3>趋势</h3>
-          <span>至少需要 2 份报告</span>
+          <span>按天聚合</span>
         </div>
-        <div className="empty-state compact">多生成几次分析报告后，这里会展示趋势。</div>
+        <div className="empty-state compact">产生 review 数据后，这里会展示按天趋势。</div>
       </section>
     )
   }
 
   const chartPoints = history.map((item, index) => {
+    const day = item.day || prettyTime(item.finished_at).slice(0, 10)
+    const label = day.length >= 10 ? day.slice(5, 10) : day
     return {
-      id: `${item.finished_at}-${index}`,
-      label: prettyTime(item.finished_at).slice(5, 16),
+      id: `${day}-${index}`,
+      label,
       total: item.total_findings || 0,
       open: item.open_findings || 0,
       severe: item.high_critical_open || 0,
@@ -892,7 +903,7 @@ function TrendOverview({ points }) {
       />
       <LineChart
         title="Review 成功率趋势"
-        subtitle={`最近 ${chartPoints.length} 次完成的 review`}
+        subtitle={`最近 ${chartPoints.length} 天`}
         points={chartPoints}
         valueSuffix="%"
         series={[

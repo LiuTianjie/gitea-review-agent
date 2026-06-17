@@ -44,7 +44,7 @@ func TestGetPullRequestStatus_HTTP(t *testing.T) {
 		if r.URL.Path != "/api/v1/repos/acme/widget/pulls/42" {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
-		io.WriteString(w, `{"state":"closed","merged":true}`)
+		io.WriteString(w, `{"state":"closed","merged":true,"poster":{"login":"dev-poster"}}`)
 	}))
 	defer srv.Close()
 
@@ -55,6 +55,9 @@ func TestGetPullRequestStatus_HTTP(t *testing.T) {
 	}
 	if status.State != "closed" || !status.Merged || status.Open() {
 		t.Fatalf("status = %+v, want closed merged non-open", status)
+	}
+	if status.Author != "dev-poster" {
+		t.Fatalf("Author = %q, want dev-poster", status.Author)
 	}
 }
 

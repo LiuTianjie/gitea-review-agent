@@ -209,6 +209,16 @@ func nonEmptyLines(raw string) []string {
 	return out
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func formatWorktreeDiffSummary(summary worktreeDiffSummary) string {
 	msg := fmt.Sprintf("worktree diff: base=%s head=%s files=%d", summary.BaseRef, summary.HeadSHA, summary.FileCount)
 	if len(summary.Sample) > 0 {
@@ -412,16 +422,16 @@ func appendRepositoryGuidanceNote(note string, files []guidanceFile) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func (o *Orchestrator) ensurePullRequestOpen(ctx context.Context, jobID int64, pr model.PRRef) error {
+func (o *Orchestrator) ensurePullRequestOpen(ctx context.Context, jobID int64, pr model.PRRef) (model.PullRequestStatus, error) {
 	status, err := o.Gitea.GetPullRequestStatus(ctx, pr)
 	if err != nil {
-		return fmt.Errorf("check PR status: %w", err)
+		return model.PullRequestStatus{}, fmt.Errorf("check PR status: %w", err)
 	}
 	if status.Open() {
-		return nil
+		return status, nil
 	}
 	o.jobLog(ctx, jobID, "skip", fmt.Sprintf("PR is no longer open (state=%s merged=%t); skipping review submission", status.State, status.Merged))
-	return errPullRequestClosed
+	return status, errPullRequestClosed
 }
 
 // review runs a full (new) or incremental (resume) review and posts it.
@@ -431,12 +441,14 @@ func (o *Orchestrator) review(ctx context.Context, jobID int64, ev *model.Webhoo
 	if len(o.reviewers()) == 0 {
 		return fmt.Errorf("no reviewers configured")
 	}
-	if err := o.ensurePullRequestOpen(ctx, jobID, pr); err != nil {
+	status, err := o.ensurePullRequestOpen(ctx, jobID, pr)
+	if err != nil {
 		if errors.Is(err, errPullRequestClosed) {
 			return nil
 		}
 		return err
 	}
+	author := firstNonEmpty(ev.Author, status.Author)
 
 	o.jobLog(ctx, jobID, "state", "loading PR state")
 	pull, err := o.Store.GetPull(ctx, pr)
@@ -444,13 +456,26 @@ func (o *Orchestrator) review(ctx context.Context, jobID int64, ev *model.Webhoo
 		return fmt.Errorf("get pull: %w", err)
 	}
 	if pull == nil {
-		if err := o.Store.UpsertPull(ctx, &model.PullState{PR: pr, Author: ev.Author, HeadSHA: ev.HeadSHA, BaseRef: ev.BaseRef}); err != nil {
+		if err := o.Store.UpsertPull(ctx, &model.PullState{PR: pr, Author: author, HeadSHA: ev.HeadSHA, BaseRef: ev.BaseRef}); err != nil {
 			return fmt.Errorf("ensure pull: %w", err)
 		}
 		pull, err = o.Store.GetPull(ctx, pr)
 		if err != nil {
 			return fmt.Errorf("get ensured pull: %w", err)
 		}
+	} else if strings.TrimSpace(pull.Author) == "" && author != "" {
+		updated := *pull
+		updated.Author = author
+		if updated.HeadSHA == "" {
+			updated.HeadSHA = ev.HeadSHA
+		}
+		if updated.BaseRef == "" {
+			updated.BaseRef = ev.BaseRef
+		}
+		if err := o.Store.UpsertPull(ctx, &updated); err != nil {
+			return fmt.Errorf("update pull author: %w", err)
+		}
+		pull.Author = author
 	}
 	if pull == nil {
 		return fmt.Errorf("pull state was not created")
@@ -583,7 +608,7 @@ func (o *Orchestrator) runReviewer(ctx context.Context, jobID int64, ev *model.W
 	if result.OverallSeverity.Blocking() || anyBlocking(result.Findings) {
 		event = model.ReviewEventRequestChanges
 	}
-	if err := o.ensurePullRequestOpen(ctx, jobID, pr); err != nil {
+	if _, err := o.ensurePullRequestOpen(ctx, jobID, pr); err != nil {
 		if errors.Is(err, errPullRequestClosed) {
 			if run.ID != 0 {
 				_ = o.Store.FinishReviewRun(ctx, run.ID, model.ReviewRunSkipped, "PR closed or merged before posting review", len(result.Findings))

@@ -33,9 +33,17 @@ type giteaBranch struct {
 }
 
 type giteaPullRequest struct {
-	Base giteaBranch `json:"base"`
-	Head giteaBranch `json:"head"`
-	User giteaUser   `json:"user"`
+	Base   giteaBranch `json:"base"`
+	Head   giteaBranch `json:"head"`
+	User   giteaUser   `json:"user"`
+	Poster giteaUser   `json:"poster"`
+}
+
+func (pr giteaPullRequest) author() string {
+	if name := pr.User.name(); name != "" {
+		return name
+	}
+	return pr.Poster.name()
 }
 
 // pullRequestPayload models the body sent for the X-Gitea-Event: pull_request.
@@ -97,7 +105,7 @@ func Parse(eventType string, body []byte) (*model.WebhookEvent, error) {
 				Repo:   p.Repository.Name,
 				Number: p.Number,
 			},
-			Author:   p.PullRequest.User.name(),
+			Author:   p.PullRequest.author(),
 			BaseRef:  p.PullRequest.Base.Ref,
 			HeadRef:  p.PullRequest.Head.Ref,
 			HeadSHA:  p.PullRequest.Head.SHA,

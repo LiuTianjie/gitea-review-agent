@@ -130,6 +130,17 @@ func TestParsePullRequest(t *testing.T) {
 	}
 }
 
+func TestParsePullRequestUsesPosterAuthorFallback(t *testing.T) {
+	body := strings.Replace(pullRequestBody, `"user":{"username":"dev-a"},`, `"poster":{"login":"dev-poster"},`, 1)
+	ev, err := Parse("pull_request", []byte(body))
+	if err != nil {
+		t.Fatalf("Parse pull_request: unexpected error: %v", err)
+	}
+	if ev.Author != "dev-poster" {
+		t.Errorf("Author = %q, want dev-poster", ev.Author)
+	}
+}
+
 func TestParsePullRequestSync(t *testing.T) {
 	body := strings.Replace(pullRequestBody, `"action":"opened"`, `"action":"synchronized"`, 1)
 	ev, err := Parse("pull_request_sync", []byte(body))

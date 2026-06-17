@@ -1174,7 +1174,7 @@ func TestAnalysisReports(t *testing.T) {
 	}
 }
 
-func TestBuildAnalysisTrendUsesReviewRunData(t *testing.T) {
+func TestBuildAnalysisTrendBucketsReviewRunDataByDay(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
 	pr := model.PRRef{Owner: "acme", Repo: "widgets", Number: 21}
@@ -1217,6 +1217,17 @@ func TestBuildAnalysisTrendUsesReviewRunData(t *testing.T) {
 		t.Fatalf("backdate run2: %v", err)
 	}
 
+	run3 := &model.ReviewRun{PullID: pull.ID, Agent: "codex", HeadSHA: "sha3"}
+	if err := st.CreateReviewRun(ctx, run3); err != nil {
+		t.Fatalf("CreateReviewRun run3: %v", err)
+	}
+	if err := st.FinishReviewRun(ctx, run3.ID, model.ReviewRunDone, "", 0); err != nil {
+		t.Fatalf("FinishReviewRun run3: %v", err)
+	}
+	if _, err := st.db.Exec(`UPDATE review_runs SET finished_at='2026-06-18T01:00:00Z' WHERE id=?`, run3.ID); err != nil {
+		t.Fatalf("backdate run3: %v", err)
+	}
+
 	points, err := st.BuildAnalysisTrend(ctx, 12)
 	if err != nil {
 		t.Fatalf("BuildAnalysisTrend: %v", err)
@@ -1224,13 +1235,14 @@ func TestBuildAnalysisTrendUsesReviewRunData(t *testing.T) {
 	if len(points) != 2 {
 		t.Fatalf("trend len = %d, want 2: %+v", len(points), points)
 	}
-	if points[0].TotalReviewRuns != 1 || points[0].SuccessfulReviewRuns != 1 ||
+	if points[0].Day != "2026-06-17" || points[0].TotalReviewRuns != 2 || points[0].SuccessfulReviewRuns != 1 ||
+		points[0].FailedReviewRuns != 1 || points[0].SuccessRate != 0.5 ||
 		points[0].TotalFindings != 1 || points[0].OpenFindings != 1 || points[0].HighCriticalOpen != 1 {
-		t.Fatalf("first trend point mismatch: %+v", points[0])
+		t.Fatalf("first daily trend point mismatch: %+v", points[0])
 	}
-	if points[1].TotalReviewRuns != 2 || points[1].SuccessfulReviewRuns != 1 ||
-		points[1].FailedReviewRuns != 1 || points[1].SuccessRate != 0.5 || points[1].TotalFindings != 1 {
-		t.Fatalf("second trend point mismatch: %+v", points[1])
+	if points[1].Day != "2026-06-18" || points[1].TotalReviewRuns != 1 ||
+		points[1].SuccessfulReviewRuns != 1 || points[1].TotalFindings != 0 {
+		t.Fatalf("second daily trend point mismatch: %+v", points[1])
 	}
 }
 
@@ -1315,6 +1327,71 @@ func TestBuildAnalysisSummaryToleratesLegacyNullFindingFields(t *testing.T) {
 	}
 	if len(summary.RecentSevere) != 0 {
 		t.Fatalf("legacy info finding should not be recent severe: %+v", summary.RecentSevere)
+	}
+}
+
+func TestBuildAnalysisSummaryUsesJobPayloadAuthorFallback(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	pr := model.PRRef{Owner: "acme", Repo: "widgets", Number: 23}
+	raw := []byte(`{
+		"action":"opened",
+		"number":23,
+		"pull_request":{
+			"poster":{"login":"dev-from-raw"},
+			"base":{"ref":"main"},
+			"head":{"ref":"feat","sha":"sha1"}
+		},
+		"repository":{
+			"name":"widgets",
+			"owner":{"username":"acme"},
+			"clone_url":"https://git.example.com/acme/widgets.git"
+		}
+	}`)
+	if _, _, err := st.EnqueueJob(ctx, &model.WebhookEvent{
+		DeliveryID: "delivery-author-fallback",
+		Event:      model.EventPullRequest,
+		Action:     "opened",
+		PR:         pr,
+		BaseRef:    "main",
+		HeadRef:    "feat",
+		HeadSHA:    "sha1",
+		Raw:        raw,
+	}); err != nil {
+		t.Fatalf("EnqueueJob: %v", err)
+	}
+	if err := st.UpsertPull(ctx, &model.PullState{PR: pr, HeadSHA: "sha0"}); err != nil {
+		t.Fatalf("UpsertPull: %v", err)
+	}
+	pull, err := st.GetPull(ctx, pr)
+	if err != nil {
+		t.Fatalf("GetPull: %v", err)
+	}
+	run := &model.ReviewRun{PullID: pull.ID, Agent: "minimax", HeadSHA: "sha1"}
+	if err := st.CreateReviewRun(ctx, run); err != nil {
+		t.Fatalf("CreateReviewRun: %v", err)
+	}
+	if err := st.SaveFindings(ctx, pull.ID, "sha1", []model.Finding{{
+		Path: "a.go", Line: 12, Side: model.SideNew,
+		Severity: model.SeverityMedium, Title: "bug", Body: "x",
+	}}, model.FindingSaveOptions{Agent: "minimax", ReviewRunID: run.ID}); err != nil {
+		t.Fatalf("SaveFindings: %v", err)
+	}
+	if err := st.FinishReviewRun(ctx, run.ID, model.ReviewRunDone, "", 1); err != nil {
+		t.Fatalf("FinishReviewRun: %v", err)
+	}
+
+	summary, err := st.BuildAnalysisSummary(ctx)
+	if err != nil {
+		t.Fatalf("BuildAnalysisSummary: %v", err)
+	}
+	if len(summary.ByDeveloper) != 1 {
+		t.Fatalf("ByDeveloper len = %d, want 1: %+v", len(summary.ByDeveloper), summary.ByDeveloper)
+	}
+	dev := summary.ByDeveloper[0]
+	if dev.Developer != "dev-from-raw" || dev.PullRequests != 1 || dev.ReviewRuns != 1 || dev.Findings != 1 {
+		t.Fatalf("ByDeveloper fallback mismatch: %+v", dev)
 	}
 }
 
