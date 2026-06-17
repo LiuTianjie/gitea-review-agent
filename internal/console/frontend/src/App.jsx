@@ -239,7 +239,7 @@ function JobsPanel() {
   const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState(null)
-  const [selectedId, setSelectedId] = useState(null)
+  const [drawerJobId, setDrawerJobId] = useState(null)
   const [selectedJob, setSelectedJob] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
 
@@ -255,14 +255,13 @@ function JobsPanel() {
       const payload = await fetchJSON(`/admin/api/jobs?${params.toString()}`, {}, 8000)
       setJobs(payload.jobs || [])
       setHasMore(Boolean(payload.has_more))
-      if (!selectedId && payload.jobs?.length) setSelectedId(payload.jobs[0].id)
       setMessage(null)
     } catch (error) {
       setMessage({ ok: false, text: `加载任务失败：${error.message}` })
     } finally {
       if (showBusy) setLoading(false)
     }
-  }, [page, pageSize, selectedId])
+  }, [page, pageSize])
 
   useEffect(() => {
     loadJobs(true)
@@ -278,13 +277,13 @@ function JobsPanel() {
   }, [loadJobs, loadStats])
 
   useEffect(() => {
-    if (!selectedId) {
+    if (!drawerJobId) {
       setSelectedJob(null)
       return
     }
     let cancelled = false
     setDetailLoading(true)
-    fetchJSON(`/admin/api/jobs/${encodeURIComponent(selectedId)}`, {}, 8000)
+    fetchJSON(`/admin/api/jobs/${encodeURIComponent(drawerJobId)}`, {}, 8000)
       .then((payload) => {
         if (!cancelled) setSelectedJob(payload)
       })
@@ -297,12 +296,12 @@ function JobsPanel() {
     return () => {
       cancelled = true
     }
-  }, [selectedId])
+  }, [drawerJobId])
 
   const refresh = async () => {
     await Promise.all([loadJobs(true), loadStats()])
-    if (selectedId) {
-      const payload = await fetchJSON(`/admin/api/jobs/${encodeURIComponent(selectedId)}`, {}, 8000)
+    if (drawerJobId) {
+      const payload = await fetchJSON(`/admin/api/jobs/${encodeURIComponent(drawerJobId)}`, {}, 8000)
       setSelectedJob(payload)
     }
   }
@@ -311,7 +310,7 @@ function JobsPanel() {
     try {
       const payload = await fetchJSON(`/admin/api/jobs/${encodeURIComponent(id)}/rerun`, { method: 'POST' }, 8000)
       setMessage({ ok: true, text: `已重新运行任务 #${payload.job?.id || id}` })
-      setSelectedId(payload.job?.id || id)
+      setDrawerJobId(payload.job?.id || id)
       await refresh()
     } catch (error) {
       setMessage({ ok: false, text: `重新运行失败：${error.message}` })
@@ -370,7 +369,7 @@ function JobsPanel() {
           </thead>
           <tbody>
             {jobs.length ? jobs.map((job) => (
-              <tr key={job.id} className={String(job.id) === String(selectedId) ? 'selected' : ''} onClick={() => setSelectedId(job.id)}>
+              <tr key={job.id}>
                 <td>{job.id}</td>
                 <td>{job.owner}/{job.repo}#{job.number}</td>
                 <td>{job.event}</td>
@@ -380,7 +379,15 @@ function JobsPanel() {
                 <td>{prettyTime(job.created_at)}</td>
                 <td>{prettyTime(job.started_at)}</td>
                 <td><code>{job.session_id || '-'}</code></td>
-                <td><span className={job.error ? 'log-pill has-error' : 'log-pill'}>{job.log_count || 0} logs{job.error ? ' + error' : ''}</span></td>
+                <td>
+                  <button
+                    className={job.error ? 'log-pill has-error' : 'log-pill'}
+                    type="button"
+                    onClick={() => setDrawerJobId(job.id)}
+                  >
+                    {job.log_count || 0} logs{job.error ? ' + error' : ''}
+                  </button>
+                </td>
               </tr>
             )) : (
               <tr><td colSpan="10" className="empty-cell">{loading ? '加载中...' : '暂无任务'}</td></tr>
@@ -389,7 +396,14 @@ function JobsPanel() {
         </table>
       </div>
 
-      <JobDetail job={selectedJob} loading={detailLoading} onRerun={rerunJob} onCancel={cancelJob} />
+      <JobLogsDrawer
+        open={Boolean(drawerJobId)}
+        job={selectedJob}
+        loading={detailLoading}
+        onClose={() => setDrawerJobId(null)}
+        onRerun={rerunJob}
+        onCancel={cancelJob}
+      />
     </section>
   )
 }
@@ -409,53 +423,74 @@ function JobStats({ stats }) {
   )
 }
 
-function JobDetail({ job, loading, onRerun, onCancel }) {
-  if (loading) return <section className="detail-panel"><h2>任务详情</h2><p className="muted">加载中...</p></section>
-  if (!job) return <section className="detail-panel"><h2>任务详情</h2><p className="muted">选择一条任务查看日志和操作。</p></section>
-  const logs = [...(job.logs || [])]
-  if (job.error) logs.push({ stage: 'error', message: job.error, created_at: job.finished_at || job.created_at })
+function JobLogsDrawer({ open, job, loading, onClose, onRerun, onCancel }) {
+  useEffect(() => {
+    if (!open) return undefined
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') onClose?.()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [open, onClose])
+
+  if (!open) return null
+  const logs = [...(job?.logs || [])]
+  if (job?.error) logs.push({ stage: 'error', message: job.error, created_at: job.finished_at || job.created_at })
 
   return (
-    <section className="detail-panel">
-      <div className="detail-head">
-        <div>
-          <h2>任务 #{job.id}</h2>
-          <p>{job.owner}/{job.repo}#{job.number}</p>
-        </div>
-        <div className="toolbar">
-          <StatusBadge status={job.status} />
-          {job.status === 'pending' ? <IconButton icon={XCircle} className="danger" onClick={() => onCancel(job.id)}>取消</IconButton> : null}
-          <IconButton icon={RotateCcw} onClick={() => onRerun(job.id)}>重新运行</IconButton>
-        </div>
-      </div>
-
-      <div className="detail-grid">
-        <Info label="事件" value={job.event} />
-        <Info label="动作" value={job.action || '-'} />
-        <Info label="次数" value={job.attempts} />
-        <Info label="会话" value={job.session_id || '-'} code />
-        <Info label="错误类型" value={job.error_type || '-'} />
-        <Info label="下次重试" value={prettyTime(job.next_attempt_at)} />
-      </div>
-
-      <div className="timeline">
-        {logs.length ? logs.map((log, index) => (
-          <div className="log-row" key={`${log.stage}-${log.created_at}-${index}`}>
-            <span>{prettyTime(log.created_at)}</span>
-            <strong>{log.stage}</strong>
-            <pre>{log.message}</pre>
+    <div className="drawer-layer" role="dialog" aria-modal="true" aria-label="任务日志">
+      <button className="drawer-backdrop" type="button" aria-label="关闭日志" onClick={onClose} />
+      <aside className="log-drawer">
+        <div className="log-drawer-head">
+          <div>
+            <span className="drawer-eyebrow">Job Logs</span>
+            <h2>{job ? `任务 #${job.id}` : '任务日志'}</h2>
+            <p>{job ? `${job.owner}/${job.repo}#${job.number}` : '正在读取任务详情...'}</p>
           </div>
-        )) : <p className="muted">暂无日志</p>}
-      </div>
-    </section>
-  )
-}
+          <button className="drawer-close" type="button" aria-label="关闭日志" onClick={onClose}>
+            <XCircle size={20} />
+          </button>
+        </div>
 
-function Info({ label, value, code }) {
-  return (
-    <div className="info-card">
-      <span>{label}</span>
-      {code ? <code>{value}</code> : <strong>{value}</strong>}
+        {loading ? (
+          <div className="drawer-loading">日志加载中...</div>
+        ) : job ? (
+          <>
+            <div className="log-drawer-summary">
+              <StatusBadge status={job.status} />
+              <span>{job.event}</span>
+              <span>{job.action || '-'}</span>
+              <span>{job.attempts} attempts</span>
+              {job.error_type ? <span>{job.error_type}</span> : null}
+            </div>
+
+            <div className="log-drawer-actions">
+              {job.status === 'pending' ? <IconButton icon={XCircle} className="danger" onClick={() => onCancel(job.id)}>取消</IconButton> : null}
+              <IconButton icon={RotateCcw} onClick={() => onRerun(job.id)}>重新运行</IconButton>
+            </div>
+
+            <dl className="log-meta">
+              <div><dt>创建</dt><dd>{prettyTime(job.created_at)}</dd></div>
+              <div><dt>开始</dt><dd>{prettyTime(job.started_at)}</dd></div>
+              <div><dt>完成</dt><dd>{prettyTime(job.finished_at)}</dd></div>
+              <div><dt>下次重试</dt><dd>{prettyTime(job.next_attempt_at)}</dd></div>
+              <div className="wide"><dt>会话</dt><dd><code>{job.session_id || '-'}</code></dd></div>
+            </dl>
+
+            <div className="log-stream" role="log" aria-live="polite">
+              {logs.length ? logs.map((log, index) => (
+                <div className={log.stage === 'error' ? 'log-line error' : 'log-line'} key={`${log.stage}-${log.created_at}-${index}`}>
+                  <time>{prettyTime(log.created_at)}</time>
+                  <strong>{log.stage}</strong>
+                  <pre>{log.message}</pre>
+                </div>
+              )) : <p className="muted">暂无日志</p>}
+            </div>
+          </>
+        ) : (
+          <div className="drawer-loading">未找到任务详情。</div>
+        )}
+      </aside>
     </div>
   )
 }
@@ -513,7 +548,7 @@ function SkillsPanel() {
     if (!selected) return
     setGenerating(true)
     setGenerationTask(null)
-    setMessage({ ok: true, text: '已提交 Codex Skill 生成任务，正在等待结果...' })
+    setMessage({ ok: true, text: '已提交项目 Skill 生成任务，正在等待结果...' })
     try {
       const payload = await fetchJSON(`/admin/api/skills/${encodeURIComponent(selected.owner)}/${encodeURIComponent(selected.repo)}/generate`, { method: 'POST' }, 15000)
       const task = payload.task || null
@@ -569,7 +604,7 @@ function SkillsPanel() {
 
   const skill = detail || {}
   const ctx = skill.context || {}
-  const evidencePatterns = ctx.patterns || []
+  const evidenceSignals = buildSkillSignals(ctx.patterns || [])
   const busy = loading || generating
   const downloadPath = selected ? `/skills/${encodeURIComponent(selected.owner)}/${encodeURIComponent(selected.repo)}/SKILL.md` : ''
   const origin = typeof window === 'undefined' ? '' : window.location.origin
@@ -601,12 +636,12 @@ function SkillsPanel() {
       <div className="section-head">
         <div>
           <h2>Skill</h2>
-          <p>按项目把常见缺陷沉淀成可下载、可演进的 Codex Skill。</p>
+          <p>按项目把常见缺陷沉淀成可下载、可演进的经验 Skill。</p>
         </div>
         <div className="toolbar">
           <IconButton icon={RefreshCw} onClick={loadProjects} disabled={generating}>刷新</IconButton>
           <IconButton icon={generating ? LoaderCircle : Sparkles} className={generating ? 'busy' : ''} onClick={generate} disabled={!selected || generating}>
-            {generating ? 'Codex 生成中' : '生成/进化'}
+            {generating ? '生成中' : '生成/进化'}
           </IconButton>
         </div>
       </div>
@@ -648,7 +683,7 @@ function SkillsPanel() {
                 <div className="skill-generating-banner" role="status">
                   <LoaderCircle size={18} />
                   <div>
-                    <strong>Codex 正在生成/进化 Skill</strong>
+                    <strong>正在生成/进化项目 Skill</strong>
                     <span>任务 {generationTask?.id || '-'} 正在后台运行，完成后自动刷新版本与下载链接。</span>
                   </div>
                 </div>
@@ -672,20 +707,20 @@ function SkillsPanel() {
                 <pre className="command-box">{installCommand}</pre>
               </section>
 
-              {evidencePatterns.length ? (
+              {evidenceSignals.length ? (
                 <section className="subsection">
                   <div className="subsection-title">
                     <div>
-                      <h3>证据摘要</h3>
-                      <span>生成时会把这些缺陷模式交给 Codex</span>
+                      <h3>经验信号</h3>
+                      <span>按标签、严重度和状态抽象，生成时用于沉淀经验</span>
                     </div>
                   </div>
                   <div className="pattern-list">
-                    {evidencePatterns.slice(0, 6).map((pattern) => (
-                      <article className="pattern-card" key={`${pattern.title}-${pattern.severity}-${pattern.status}`}>
-                        <strong>{pattern.title}</strong>
-                        <span>{pattern.severity} · {pattern.status} · {pattern.count} 次</span>
-                        <small>{pattern.sample_path}{pattern.sample_line ? `:${pattern.sample_line}` : ''}</small>
+                    {evidenceSignals.slice(0, 6).map((signal) => (
+                      <article className="pattern-card" key={`${signal.label}-${signal.severity}-${signal.status}`}>
+                        <strong>{signal.label}</strong>
+                        <span>{signal.severity} · {signal.status} · {signal.count} 次</span>
+                        <small>{signal.openCount} open · general signal</small>
                       </article>
                     ))}
                   </div>
@@ -696,7 +731,7 @@ function SkillsPanel() {
                 <div className="subsection-title">
                   <div>
                     <h3>SKILL.md</h3>
-                    <span>{generating ? 'Codex 正在生成...' : loading ? '加载中...' : skill.content ? '可直接下载使用' : '点击生成后出现内容'}</span>
+                    <span>{generating ? '正在生成...' : loading ? '加载中...' : skill.content ? '可直接下载使用' : '点击生成后出现内容'}</span>
                   </div>
                 </div>
                 <pre className={generating ? 'skill-preview generating' : 'skill-preview'}>{generating ? '正在基于项目历史缺陷和已有 Skill 生成，请稍候...' : skill.content || '还没有生成 Skill。'}</pre>
@@ -709,6 +744,26 @@ function SkillsPanel() {
       </div>
     </section>
   )
+}
+
+function buildSkillSignals(patterns) {
+  const byKey = new Map()
+  for (const pattern of patterns || []) {
+    const tags = [...new Set((pattern.tags || []).map((tag) => String(tag || '').trim().toLowerCase()).filter(Boolean))].sort().slice(0, 3)
+    const label = tags.length ? tags.join(' / ') : `${pattern.severity || 'general'} experience`
+    const key = `${label}\u0000${pattern.severity || ''}\u0000${pattern.status || ''}`
+    const current = byKey.get(key) || {
+      label,
+      severity: pattern.severity || 'info',
+      status: pattern.status || 'open',
+      count: 0,
+      openCount: 0
+    }
+    current.count += pattern.count || 0
+    current.openCount += pattern.open_count || 0
+    byKey.set(key, current)
+  }
+  return [...byKey.values()].sort((a, b) => b.count - a.count || b.openCount - a.openCount || a.label.localeCompare(b.label))
 }
 
 function AnalyticsPanel() {

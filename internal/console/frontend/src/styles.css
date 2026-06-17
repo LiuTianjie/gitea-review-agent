@@ -130,7 +130,6 @@ h3 {
 }
 
 .panel,
-.detail-panel,
 .config-group,
 .subsection {
   border: 1px solid #e1e1dd;
@@ -144,7 +143,6 @@ h3 {
 }
 
 .section-head,
-.detail-head,
 .group-head {
   display: flex;
   align-items: flex-start;
@@ -154,7 +152,6 @@ h3 {
 }
 
 .section-head p,
-.detail-head p,
 .group-head p {
   margin-top: 6px;
   color: #737373;
@@ -328,12 +325,7 @@ h3 {
   z-index: 1;
 }
 
-.job-table tbody tr {
-  cursor: pointer;
-}
-
-.job-table tbody tr:hover,
-.job-table tbody tr.selected {
+.job-table tbody tr:hover {
   background: #f5f8f8;
 }
 
@@ -361,6 +353,7 @@ h3 {
 .log-pill {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   min-height: 26px;
   padding: 3px 10px;
   border-radius: 999px;
@@ -370,6 +363,15 @@ h3 {
   font-weight: 850;
   line-height: 1.1;
   white-space: nowrap;
+}
+
+button.log-pill {
+  font: inherit;
+}
+
+button.log-pill:hover {
+  border-color: #b8b8b1;
+  background: #fff;
 }
 
 .status-done,
@@ -409,28 +411,12 @@ h3 {
   background: #f7f3ed;
 }
 
-.detail-panel {
-  margin-top: 22px;
-  padding: 22px;
-}
-
-.detail-grid,
 .form-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
 
-.info-card {
-  min-width: 0;
-  min-height: 80px;
-  padding: 14px;
-  border: 1px solid #e5e5e0;
-  border-radius: 8px;
-  background: #fff;
-}
-
-.info-card span,
 .field span {
   display: block;
   margin-bottom: 8px;
@@ -439,45 +425,213 @@ h3 {
   font-weight: 850;
 }
 
-.info-card strong,
-.info-card code {
-  display: block;
-  overflow-wrap: anywhere;
-  font-size: 16px;
-}
-
-.timeline {
-  display: grid;
-  gap: 10px;
-  margin-top: 18px;
-}
-
-.log-row {
-  display: grid;
-  grid-template-columns: 170px 120px minmax(0, 1fr);
-  gap: 12px;
-  padding: 12px;
-  border: 1px solid #e5e5e0;
-  border-radius: 8px;
-  background: #fbfbf8;
-}
-
-.log-row span {
-  color: #777;
-  font-size: 13px;
-  font-weight: 750;
-}
-
-.log-row strong {
-  color: #333;
-}
-
-.log-row pre,
 .status-box {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: #2b2b2b;
+}
+
+.drawer-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(20, 20, 20, 0.24);
+  cursor: default;
+}
+
+.log-drawer {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: min(760px, calc(100vw - 28px));
+  height: 100vh;
+  border-left: 1px solid #d9d9d4;
+  background: #f8f8f6;
+  box-shadow: -24px 0 60px rgba(20, 20, 20, 0.18);
+}
+
+.log-drawer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 22px 16px;
+  border-bottom: 1px solid #e3e3df;
+  background: #fff;
+}
+
+.drawer-eyebrow {
+  display: block;
+  margin-bottom: 8px;
+  color: #777;
+  text-transform: uppercase;
+  letter-spacing: 0;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.log-drawer-head h2 {
+  font-size: 22px;
+}
+
+.log-drawer-head p {
+  margin-top: 5px;
+  color: #666;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.drawer-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid #deded9;
+  border-radius: 999px;
+  background: #fff;
+  color: #555;
+}
+
+.drawer-close:hover {
+  border-color: #bdbdb7;
+  color: #151515;
+}
+
+.drawer-loading {
+  padding: 22px;
+  color: #777;
+  font-weight: 800;
+}
+
+.log-drawer-summary,
+.log-drawer-actions,
+.log-meta {
+  margin: 14px 18px 0;
+}
+
+.log-drawer-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.log-drawer-summary > span:not(.badge) {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 3px 9px;
+  border: 1px solid #e1e1dc;
+  border-radius: 999px;
+  background: #fff;
+  color: #555;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.log-drawer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.log-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid #e3e3df;
+  border-radius: 8px;
+  background: #e3e3df;
+}
+
+.log-meta div {
+  min-width: 0;
+  padding: 10px 12px;
+  background: #fff;
+}
+
+.log-meta .wide {
+  grid-column: 1 / -1;
+}
+
+.log-meta dt {
+  margin: 0 0 5px;
+  color: #777;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.log-meta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #232323;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.log-stream {
+  flex: 1;
+  min-height: 0;
+  margin-top: 16px;
+  overflow: auto;
+  border-top: 1px solid #e3e3df;
+  background: #10110f;
+}
+
+.log-line {
+  display: grid;
+  grid-template-columns: 148px 104px minmax(0, 1fr);
+  gap: 12px;
+  padding: 10px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  color: #e8e4dc;
+}
+
+.log-line:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.log-line time,
+.log-line strong {
+  padding-top: 2px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.log-line time {
+  color: #8f968d;
+}
+
+.log-line strong {
+  color: #d7c28a;
+}
+
+.log-line pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #f1efe8;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.log-line.error {
+  background: rgba(138, 31, 31, 0.2);
+}
+
+.log-line.error strong {
+  color: #ffb0a5;
 }
 
 .two-column {
@@ -1177,7 +1331,6 @@ h3 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .detail-grid,
   .form-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1190,7 +1343,6 @@ h3 {
   }
 
   .panel,
-  .detail-panel,
   .config-group,
   .subsection {
     padding: 14px;
@@ -1221,14 +1373,23 @@ h3 {
   .pattern-list,
   .trend-grid,
   .chart-grid,
-  .detail-grid,
   .form-grid,
   .two-column {
     grid-template-columns: 1fr;
   }
 
-  .log-row {
+  .log-drawer {
+    width: 100vw;
+  }
+
+  .log-meta {
     grid-template-columns: 1fr;
+  }
+
+  .log-line {
+    grid-template-columns: 1fr;
+    gap: 4px;
+    padding: 12px 14px;
   }
 
   .overlap-card {
