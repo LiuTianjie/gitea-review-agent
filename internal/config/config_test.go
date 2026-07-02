@@ -20,7 +20,8 @@ func TestLoadEnvDefaults(t *testing.T) {
 		"LISTEN_ADDR", "DB_PATH", "CACHE_DIR", "WORK_DIR", "CODEX_HOME", "MODEL",
 		"CODEX_AUTH_MODE", "CODEX_API_KEY", "GITEA_URL", "GITEA_TOKEN",
 		"WEBHOOK_SECRET", "ADMIN_PASSWORD", "TRIGGER_KEYWORDS", "CONCURRENCY",
-		"REPO_ALLOWLIST", "TIMEOUT", "SECRET_KEY", "CODEX_SANDBOX_MODE",
+		"REPO_ALLOWLIST", "TIMEOUT", "SECRET_KEY", "CODEX_SANDBOX_MODE", "CODEX_REASONING_EFFORT",
+		"CODEX_CC_SWITCH_PROVIDER_ID",
 		"CLAUDE_ENABLED", "CLAUDE_MODEL", "CLAUDE_API_KEY", "CLAUDE_BASE_URL",
 		"CLAUDE_HOME", "CC_SWITCH_CONFIG_DIR", "CC_SWITCH_PROVIDER_ID", "CLAUDE_MAX_BUDGET_USD",
 		"MINIMAX_ENABLED", "MINIMAX_MODEL", "MINIMAX_PROVIDER_ID", "MINIMAX_API_KEY", "MINIMAX_BASE_URL", "MINIMAX_MAX_BUDGET_USD",
@@ -45,8 +46,8 @@ func TestLoadEnvDefaults(t *testing.T) {
 	if c.CodexHome != DefaultCodexHome {
 		t.Errorf("CodexHome = %q, want %q", c.CodexHome, DefaultCodexHome)
 	}
-	if c.CodexAuthMode != AuthModeAuthFile {
-		t.Errorf("CodexAuthMode = %q, want %q (default authfile)", c.CodexAuthMode, AuthModeAuthFile)
+	if c.CodexAuthMode != AuthModeCCSwitch {
+		t.Errorf("CodexAuthMode = %q, want %q (default ccswitch)", c.CodexAuthMode, AuthModeCCSwitch)
 	}
 	if c.CodexSandbox != DefaultSandboxMode {
 		t.Errorf("CodexSandbox = %q, want %q", c.CodexSandbox, DefaultSandboxMode)
@@ -87,39 +88,41 @@ func TestLoadEnvDefaults(t *testing.T) {
 
 func TestLoadEnvValues(t *testing.T) {
 	setEnv(t, map[string]string{
-		"LISTEN_ADDR":            ":9090",
-		"DB_PATH":                "/tmp/db.sqlite",
-		"CACHE_DIR":              "/tmp/cache",
-		"WORK_DIR":               "/tmp/work",
-		"CODEX_HOME":             "/tmp/codex",
-		"GITEA_URL":              "https://git.example.com",
-		"GITEA_TOKEN":            "tok-123",
-		"GITEA_TIMEOUT":          "45s",
-		"WEBHOOK_SECRET":         "whsec",
-		"MODEL":                  "gpt-5",
-		"CODEX_AUTH_MODE":        "apikey",
-		"CODEX_API_KEY":          "sk-abc",
-		"CODEX_SANDBOX_MODE":     "danger-full-access",
-		"CLAUDE_ENABLED":         "true",
-		"CLAUDE_MODEL":           "claude-opus-4-6-thinking",
-		"CLAUDE_API_KEY":         "ak-claude",
-		"CLAUDE_BASE_URL":        "https://llm.example.com",
-		"CLAUDE_HOME":            "/tmp/claude",
-		"CC_SWITCH_CONFIG_DIR":   "/tmp/cc-switch",
-		"CC_SWITCH_PROVIDER_ID":  "relay",
-		"CLAUDE_MAX_BUDGET_USD":  "0.42",
-		"MINIMAX_ENABLED":        "true",
-		"MINIMAX_MODEL":          "minimax-m3",
-		"MINIMAX_PROVIDER_ID":    "minimaxreview",
-		"MINIMAX_API_KEY":        "ak-minimax",
-		"MINIMAX_BASE_URL":       "https://minimax-relay.example.com",
-		"MINIMAX_MAX_BUDGET_USD": "0.25",
-		"ADMIN_PASSWORD":         "hunter2",
-		"TRIGGER_KEYWORDS":       "/review, @bot , please-review",
-		"CONCURRENCY":            "5",
-		"REPO_ALLOWLIST":         "acme/widgets, acme/gadgets",
-		"TIMEOUT":                "30s",
-		"SECRET_KEY":             "key",
+		"LISTEN_ADDR":                 ":9090",
+		"DB_PATH":                     "/tmp/db.sqlite",
+		"CACHE_DIR":                   "/tmp/cache",
+		"WORK_DIR":                    "/tmp/work",
+		"CODEX_HOME":                  "/tmp/codex",
+		"GITEA_URL":                   "https://git.example.com",
+		"GITEA_TOKEN":                 "tok-123",
+		"GITEA_TIMEOUT":               "45s",
+		"WEBHOOK_SECRET":              "whsec",
+		"MODEL":                       "gpt-5",
+		"CODEX_REASONING_EFFORT":      "xhigh",
+		"CODEX_AUTH_MODE":             "apikey",
+		"CODEX_API_KEY":               "sk-abc",
+		"CODEX_SANDBOX_MODE":          "danger-full-access",
+		"CODEX_CC_SWITCH_PROVIDER_ID": "codex-relay",
+		"CLAUDE_ENABLED":              "true",
+		"CLAUDE_MODEL":                "claude-opus-4-6-thinking",
+		"CLAUDE_API_KEY":              "ak-claude",
+		"CLAUDE_BASE_URL":             "https://llm.example.com",
+		"CLAUDE_HOME":                 "/tmp/claude",
+		"CC_SWITCH_CONFIG_DIR":        "/tmp/cc-switch",
+		"CC_SWITCH_PROVIDER_ID":       "relay",
+		"CLAUDE_MAX_BUDGET_USD":       "0.42",
+		"MINIMAX_ENABLED":             "true",
+		"MINIMAX_MODEL":               "minimax-m3",
+		"MINIMAX_PROVIDER_ID":         "minimaxreview",
+		"MINIMAX_API_KEY":             "ak-minimax",
+		"MINIMAX_BASE_URL":            "https://minimax-relay.example.com",
+		"MINIMAX_MAX_BUDGET_USD":      "0.25",
+		"ADMIN_PASSWORD":              "hunter2",
+		"TRIGGER_KEYWORDS":            "/review, @bot , please-review",
+		"CONCURRENCY":                 "5",
+		"REPO_ALLOWLIST":              "acme/widgets, acme/gadgets",
+		"TIMEOUT":                     "30s",
+		"SECRET_KEY":                  "key",
 	})
 
 	c := LoadEnv()
@@ -142,11 +145,17 @@ func TestLoadEnvValues(t *testing.T) {
 	if c.Model != "gpt-5" {
 		t.Errorf("Model = %q", c.Model)
 	}
+	if c.CodexReasoningEffort != "xhigh" {
+		t.Errorf("CodexReasoningEffort = %q", c.CodexReasoningEffort)
+	}
 	if c.CodexAuthMode != AuthModeAPIKey {
 		t.Errorf("CodexAuthMode = %q, want apikey", c.CodexAuthMode)
 	}
 	if c.CodexAPIKey != "sk-abc" {
 		t.Errorf("CodexAPIKey = %q", c.CodexAPIKey)
+	}
+	if c.CodexCCSwitchProvider != "codex-relay" {
+		t.Errorf("CodexCCSwitchProvider = %q", c.CodexCCSwitchProvider)
 	}
 	if c.CodexSandbox != SandboxDangerFullAccess {
 		t.Errorf("CodexSandbox = %q, want danger-full-access", c.CodexSandbox)
@@ -207,28 +216,30 @@ func TestApplyOverrides(t *testing.T) {
 	}
 
 	c.ApplyOverrides(map[string]string{
-		"gitea_url":              "https://db.example.com",
-		"gitea_token":            "db-tok",
-		"gitea_timeout":          "75s",
-		"model":                  "db-model",
-		"codex_auth_mode":        "apikey",
-		"codex_api_key":          "sk-db",
-		"codex_sandbox_mode":     "workspace-write",
-		"claude_model":           "",
-		"claude_home":            "",
-		"cc_switch_config_dir":   "",
-		"claude_max_budget_usd":  "0.5",
-		"minimax_enabled":        "true",
-		"minimax_model":          "",
-		"minimax_provider_id":    "",
-		"minimax_api_key":        "ak-db-minimax",
-		"minimax_base_url":       "https://db-minimax.example.com",
-		"minimax_max_budget_usd": "0.2",
-		"webhook_secret":         "db-secret",
-		"trigger_keywords":       "/lgtm,@review",
-		"concurrency":            "8",
-		"repo_allowlist":         "a/b",
-		"timeout":                "5m",
+		"gitea_url":                   "https://db.example.com",
+		"gitea_token":                 "db-tok",
+		"gitea_timeout":               "75s",
+		"model":                       "db-model",
+		"codex_reasoning_effort":      "high",
+		"codex_auth_mode":             "apikey",
+		"codex_api_key":               "sk-db",
+		"codex_sandbox_mode":          "workspace-write",
+		"codex_cc_switch_provider_id": "db-codex-relay",
+		"claude_model":                "",
+		"claude_home":                 "",
+		"cc_switch_config_dir":        "",
+		"claude_max_budget_usd":       "0.5",
+		"minimax_enabled":             "true",
+		"minimax_model":               "",
+		"minimax_provider_id":         "",
+		"minimax_api_key":             "ak-db-minimax",
+		"minimax_base_url":            "https://db-minimax.example.com",
+		"minimax_max_budget_usd":      "0.2",
+		"webhook_secret":              "db-secret",
+		"trigger_keywords":            "/lgtm,@review",
+		"concurrency":                 "8",
+		"repo_allowlist":              "a/b",
+		"timeout":                     "5m",
 	})
 
 	if c.GiteaURL != "https://db.example.com" {
@@ -243,6 +254,9 @@ func TestApplyOverrides(t *testing.T) {
 	if c.Model != "db-model" {
 		t.Errorf("Model not overridden: %q", c.Model)
 	}
+	if c.CodexReasoningEffort != "high" {
+		t.Errorf("CodexReasoningEffort not overridden: %q", c.CodexReasoningEffort)
+	}
 	if c.CodexAuthMode != AuthModeAPIKey {
 		t.Errorf("CodexAuthMode not overridden: %q", c.CodexAuthMode)
 	}
@@ -251,6 +265,9 @@ func TestApplyOverrides(t *testing.T) {
 	}
 	if c.CodexSandbox != SandboxWorkspaceWrite {
 		t.Errorf("CodexSandbox not overridden: %q", c.CodexSandbox)
+	}
+	if c.CodexCCSwitchProvider != "db-codex-relay" {
+		t.Errorf("CodexCCSwitchProvider not overridden: %q", c.CodexCCSwitchProvider)
 	}
 	if c.ClaudeModel != DefaultClaudeModel {
 		t.Errorf("ClaudeModel blank override = %q, want default", c.ClaudeModel)
@@ -343,6 +360,18 @@ func TestValidateAuthFileMode(t *testing.T) {
 	}
 	if err := c.Validate(); err != nil {
 		t.Errorf("Validate(authfile, no api key) = %v, want nil", err)
+	}
+}
+
+func TestValidateCCSwitchMode(t *testing.T) {
+	c := &Config{
+		CodexAuthMode: AuthModeCCSwitch,
+		Concurrency:   1,
+		Timeout:       time.Minute,
+		GiteaTimeout:  time.Minute,
+	}
+	if err := c.Validate(); err != nil {
+		t.Errorf("Validate(ccswitch without provider id) = %v, want nil", err)
 	}
 }
 

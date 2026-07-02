@@ -14,7 +14,9 @@ services:
       GITEA_TOKEN: ${GITEA_TOKEN:-}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
       MODEL: ${MODEL:-gpt-5-codex}
-      CODEX_AUTH_MODE: ${CODEX_AUTH_MODE:-authfile}
+      CODEX_REASONING_EFFORT: ${CODEX_REASONING_EFFORT:-}
+      CODEX_AUTH_MODE: ${CODEX_AUTH_MODE:-ccswitch}
+      CODEX_CC_SWITCH_PROVIDER_ID: ${CODEX_CC_SWITCH_PROVIDER_ID:-}
       CLAUDE_ENABLED: ${CLAUDE_ENABLED:-false}
       CLAUDE_MODEL: ${CLAUDE_MODEL:-sonnet}
       CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
@@ -34,7 +36,7 @@ services:
       - data:/data            # sqlite db (jobs, PR sessions, findings, settings)
       - cache:/cache          # bare git mirrors (incremental fetch)
       - work:/work            # throwaway worktrees
-      - codex-home:/codex-home # codex auth.json + sessions (MUST be writable)
+      - codex-home:/codex-home # Codex config/session state
       - claude-home:/claude-home # Claude Code settings/session state
       - cc-switch:/cc-switch  # cc-switch provider/proxy config
     restart: unless-stopped

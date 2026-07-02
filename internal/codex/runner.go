@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -45,8 +46,18 @@ type Options struct {
 	CodexHome string
 	// Model optionally overrides the codex model (--model).
 	Model string
+	// ReasoningEffort optionally overrides Codex reasoning effort.
+	ReasoningEffort string
 	// APIKey, when set, runs codex in api-key mode (CODEX_API_KEY).
 	APIKey string
+	// CCSwitchBin is the cc-switch executable. Defaults to "cc-switch".
+	CCSwitchBin string
+	// CCSwitchConfigDir sets CC_SWITCH_CONFIG_DIR for cc-switch calls.
+	CCSwitchConfigDir string
+	// UseCCSwitch reports status through cc-switch even without a forced provider id.
+	UseCCSwitch bool
+	// CCSwitchProviderID, when set, is switched before each codex invocation.
+	CCSwitchProviderID string
 	// SandboxMode is passed to codex as sandbox_mode. Defaults to read-only.
 	SandboxMode string
 	// Timeout bounds a single invocation. Defaults to 30m.
@@ -55,12 +66,17 @@ type Options struct {
 
 // Runner invokes the codex CLI in headless mode to perform structured reviews.
 type Runner struct {
-	bin       string
-	codexHome string
-	model     string
-	apiKey    string
-	sandbox   string
-	timeout   time.Duration
+	bin         string
+	codexHome   string
+	model       string
+	reasoning   string
+	apiKey      string
+	ccBin       string
+	ccDir       string
+	useCCSwitch bool
+	ccProvider  string
+	sandbox     string
+	timeout     time.Duration
 }
 
 var _ model.CodexRunner = (*Runner)(nil)
@@ -76,6 +92,10 @@ func New(opts Options) *Runner {
 	if bin == "" {
 		bin = "codex"
 	}
+	ccBin := opts.CCSwitchBin
+	if ccBin == "" {
+		ccBin = "cc-switch"
+	}
 	timeout := opts.Timeout
 	if timeout <= 0 {
 		timeout = defaultTimeout
@@ -85,19 +105,24 @@ func New(opts Options) *Runner {
 		sandbox = "read-only"
 	}
 	return &Runner{
-		bin:       bin,
-		codexHome: opts.CodexHome,
-		model:     opts.Model,
-		apiKey:    opts.APIKey,
-		sandbox:   sandbox,
-		timeout:   timeout,
+		bin:         bin,
+		codexHome:   opts.CodexHome,
+		model:       strings.TrimSpace(opts.Model),
+		reasoning:   strings.TrimSpace(opts.ReasoningEffort),
+		apiKey:      opts.APIKey,
+		ccBin:       ccBin,
+		ccDir:       opts.CCSwitchConfigDir,
+		useCCSwitch: opts.UseCCSwitch,
+		ccProvider:  strings.TrimSpace(opts.CCSwitchProviderID),
+		sandbox:     sandbox,
+		timeout:     timeout,
 	}
 }
 
-// env builds the codex process environment: the parent environment minus any
-// secret-bearing variables, plus CODEX_HOME and (in api-key mode) CODEX_API_KEY.
+// env builds the codex/cc-switch process environment: the parent environment
+// minus any secret-bearing variables, plus explicit runtime config.
 func (r *Runner) env() []string {
-	out := make([]string, 0, len(os.Environ())+2)
+	out := make([]string, 0, len(os.Environ())+3)
 	for _, kv := range os.Environ() {
 		eq := strings.IndexByte(kv, '=')
 		if eq < 0 {
@@ -114,6 +139,9 @@ func (r *Runner) env() []string {
 	if r.apiKey != "" {
 		out = append(out, "CODEX_API_KEY="+r.apiKey)
 	}
+	if r.ccDir != "" {
+		out = append(out, "CC_SWITCH_CONFIG_DIR="+r.ccDir)
+	}
 	return out
 }
 
@@ -126,6 +154,14 @@ func (r *Runner) reviewBaseArgs(schemaPath, outPath string) []string {
 		"-c", "approval_policy=never",
 		"-c", "sandbox_mode=" + r.sandbox,
 		"--skip-git-repo-check",
+	}
+	args = r.appendModelConfig(args)
+	return args
+}
+
+func (r *Runner) appendModelConfig(args []string) []string {
+	if r.reasoning != "" {
+		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", r.reasoning))
 	}
 	if r.model != "" {
 		args = append(args, "--model", r.model)
@@ -165,7 +201,7 @@ func (r *Runner) Review(ctx context.Context, in model.CodexInput) (*model.Review
 	}
 	prompt = validUTF8Prompt(prompt)
 
-	stream, err := r.run(ctx, in.Worktree, args, prompt)
+	stream, err := r.runWithProvider(ctx, in.Worktree, args, prompt)
 	if err != nil {
 		return nil, err
 	}
@@ -210,11 +246,9 @@ func (r *Runner) Ask(ctx context.Context, sessionID, worktree, question string) 
 		"-c", "sandbox_mode=" + r.sandbox,
 		"--skip-git-repo-check",
 	}
-	if r.model != "" {
-		args = append(args, "--model", r.model)
-	}
+	args = r.appendModelConfig(args)
 
-	stream, err := r.run(ctx, worktree, args, prompt)
+	stream, err := r.runWithProvider(ctx, worktree, args, prompt)
 	if err != nil {
 		return "", err
 	}
@@ -240,10 +274,8 @@ func (r *Runner) GenerateText(ctx context.Context, worktree, prompt string) (str
 		"-c", "sandbox_mode=" + r.sandbox,
 		"--skip-git-repo-check",
 	}
-	if r.model != "" {
-		args = append(args, "--model", r.model)
-	}
-	stream, err := r.run(ctx, worktree, args, validUTF8Prompt(prompt))
+	args = r.appendModelConfig(args)
+	stream, err := r.runWithProvider(ctx, worktree, args, validUTF8Prompt(prompt))
 	if err != nil {
 		return "", err
 	}
@@ -263,6 +295,9 @@ func validUTF8Prompt(prompt string) string {
 
 // Status reports codex auth state by running `codex login status`.
 func (r *Runner) Status(ctx context.Context) (string, error) {
+	if r.useCCSwitch || strings.TrimSpace(r.ccProvider) != "" {
+		return r.ccSwitchStatus(ctx)
+	}
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
@@ -279,45 +314,79 @@ func (r *Runner) Status(ctx context.Context) (string, error) {
 	return text, nil
 }
 
-// run executes codex in dir, returns captured stdout, and surfaces stderr on
-// failure. ctx is bounded by the runner timeout.
-func (r *Runner) run(ctx context.Context, dir string, args []string, stdin string) ([]byte, error) {
+func (r *Runner) ccSwitchStatus(ctx context.Context) (string, error) {
+	parts := []string{}
+	failures := []string{}
+	if current, err := r.runCommand(ctx, "", r.ccBin, []string{"--app", "codex", "provider", "current"}, ""); err == nil {
+		parts = append(parts, "cc-switch current:\n"+strings.TrimSpace(string(current)))
+	} else {
+		parts = append(parts, "cc-switch current failed: "+err.Error())
+		failures = append(failures, "cc-switch current: "+err.Error())
+	}
+	if envCheck, err := r.runCommand(ctx, "", r.ccBin, []string{"--app", "codex", "env", "check"}, ""); err == nil {
+		parts = append(parts, "cc-switch env:\n"+strings.TrimSpace(string(envCheck)))
+	} else {
+		parts = append(parts, "cc-switch env failed: "+err.Error())
+		failures = append(failures, "cc-switch env: "+err.Error())
+	}
+	status := strings.Join(parts, "\n\n")
+	if len(failures) > 0 {
+		return status, fmt.Errorf("%s", strings.Join(failures, "; "))
+	}
+	return status, nil
+}
+
+func (r *Runner) applyProvider(ctx context.Context) error {
+	if strings.TrimSpace(r.ccProvider) == "" {
+		return nil
+	}
+	_, err := r.runCommand(ctx, "", r.ccBin, []string{"--app", "codex", "provider", "switch", r.ccProvider}, "")
+	if err != nil {
+		return fmt.Errorf("cc-switch codex provider switch: %w", err)
+	}
+	return nil
+}
+
+func (r *Runner) runWithProvider(ctx context.Context, dir string, args []string, stdin string) ([]byte, error) {
+	if strings.TrimSpace(r.ccProvider) == "" {
+		return r.runCommand(ctx, dir, r.bin, args, stdin)
+	}
+	providerMu.Lock()
+	defer providerMu.Unlock()
+	if err := r.applyProvider(ctx); err != nil {
+		return nil, err
+	}
+	return r.runCommand(ctx, dir, r.bin, args, stdin)
+}
+
+var providerMu sync.Mutex
+
+func (r *Runner) runCommand(ctx context.Context, dir, bin string, args []string, stdin string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
-
 	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, r.bin, args...)
-	cmd.Dir = dir
+	cmd := exec.CommandContext(ctx, bin, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	cmd.Env = r.env()
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
-
-	// Run codex in its own process group so a timeout kills the whole tree.
-	// codex spawns children (git, etc.); killing only the direct child leaves
-	// grandchildren holding the stdout pipe open, which makes cmd.Wait block
-	// past the deadline (the I/O copy never sees EOF).
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		// Negative pid targets the entire process group (group leader == child pid).
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
-	// Backstop: if a grandchild still holds the pipes after the group kill,
-	// abort the I/O copy so Wait returns promptly instead of hanging.
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 2 * time.Second
-
-	err := cmd.Run()
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr == context.DeadlineExceeded {
-			return nil, fmt.Errorf("codex timed out after %s: %w", r.timeout, ctxErr)
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("%s timed out after %s", bin, r.timeout)
 		}
-		msg := formatCommandFailure(stderr.String(), stdout.String())
+		msg := strings.TrimSpace(strings.Join([]string{stderr.String(), stdout.String()}, "\n"))
 		if msg != "" {
-			return nil, fmt.Errorf("codex exec failed: %w: %s", err, msg)
+			return nil, fmt.Errorf("%s failed: %w: %s", bin, err, msg)
 		}
-		return nil, fmt.Errorf("codex exec failed: %w", err)
+		return nil, fmt.Errorf("%s failed: %w", bin, err)
 	}
 	return stdout.Bytes(), nil
 }

@@ -119,28 +119,33 @@ Persist these paths in production:
 - `/data` — SQLite database
 - `/cache` — bare git mirrors
 - `/work` — temporary worktrees
-- `/codex-home` — Codex auth and sessions
+- `/codex-home` — Codex config and sessions
 - `/claude-home` — Claude Code state
 - `/cc-switch` — optional provider/proxy configuration
 
-## Auth: authfile (default) vs apikey
+## Auth: cc-switch (default), authfile, or apikey
 
 | Mode | Cost | Setup |
 |------|------|-------|
-| `authfile` (default) | reuses your ChatGPT subscription, **no extra API billing** | run `codex login` locally, upload the resulting `~/.codex/auth.json` via the `/admin` console |
+| `ccswitch` (default) | depends on the selected cc-switch provider/account | configure a Codex provider/account in cc-switch, then set `CODEX_CC_SWITCH_PROVIDER_ID` or save `codex_cc_switch_provider_id` in `/admin` |
+| `authfile` (legacy) | reuses your ChatGPT subscription, **no extra API billing** | run `codex login` locally and place `~/.codex/auth.json` in `/codex-home` |
 | `apikey` | **separately billed** OpenAI Platform tokens | set `CODEX_API_KEY` + `CODEX_AUTH_MODE=apikey` |
 
-In `authfile` mode the `/codex-home` volume **must be writable** so codex can
-refresh its OAuth token in place between runs. Use the console's "check auth
-status" button to catch a stale token early.
+In `ccswitch` mode the `/cc-switch` volume **must be writable** so cc-switch can
+store providers, accounts, proxy state, and Codex live config. `CODEX_CC_SWITCH_PROVIDER_ID`
+is optional; when it is set, the runner switches to that Codex provider before
+each review. The admin console reads Codex providers, model ids, and
+`model_reasoning_effort` values from `cc-switch.db`; saved `MODEL` and
+`CODEX_REASONING_EFFORT` values are then passed to Codex as explicit overrides.
 
 ## First-run checklist
 
-1. **Codex creds**: `codex login` on your machine → upload `~/.codex/auth.json` at `/admin`.
+1. **Codex provider**: configure Codex in cc-switch, then set the provider id in `/admin` or `CODEX_CC_SWITCH_PROVIDER_ID`.
 2. **Gitea bot**: a Gitea user with a token scoped **repo read + PR write**; add it to private repos.
 3. **Console password**: set `ADMIN_PASSWORD` (no password ⇒ `/admin` returns 503).
-4. **Console config** (`/admin`): Gitea URL, bot token, webhook secret, model,
-   trigger keywords, repo allowlist. DB settings override env and apply without a restart.
+4. **Console config** (`/admin`): Gitea URL, bot token, webhook secret, Codex
+   provider/model/reasoning effort, trigger keywords, repo allowlist. DB settings
+   override env and apply without a restart.
 5. **Gitea webhook** (per repo or org-level):
    - URL `http://<host>:8080/webhook`, Content-Type `application/json`
    - Secret = the webhook secret you set in the console
@@ -216,7 +221,9 @@ Env vars (all optional except `ADMIN_PASSWORD`; the console can set the rest):
 | `GITEA_TIMEOUT` | `90s` | per Gitea API request; also configurable in console |
 | `WEBHOOK_SECRET` | — | HMAC-SHA256 verification |
 | `MODEL` | `gpt-5-codex` | codex model |
-| `CODEX_AUTH_MODE` | `authfile` | or `apikey` |
+| `CODEX_REASONING_EFFORT` | — | optional Codex `model_reasoning_effort`; leave empty to use the cc-switch/provider default |
+| `CODEX_AUTH_MODE` | `ccswitch` | or legacy `authfile`, or `apikey` |
+| `CODEX_CC_SWITCH_PROVIDER_ID` | — | optional cc-switch Codex app provider id switched before Codex runs |
 | `CODEX_API_KEY` | — | apikey mode only (separately billed) |
 | `CODEX_SANDBOX_MODE` | `read-only` | set `danger-full-access` only when the container blocks Codex's read-only sandbox |
 | `CLAUDE_ENABLED` | `false` | enable the Claude reviewer |

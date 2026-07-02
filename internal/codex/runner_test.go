@@ -81,6 +81,41 @@ exit 0
 	return script
 }
 
+func writeCCSwitchStub(t *testing.T, logPath string) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := filepath.Join(dir, "cc-switch-stub.sh")
+	body := `#!/bin/sh
+{
+  echo "CC_SWITCH_CONFIG_DIR=${CC_SWITCH_CONFIG_DIR}"
+  i=0
+  for a in "$@"; do
+    echo "CCARG[$i]=$a"
+    i=$((i+1))
+  done
+} >> "$STUB_LOG"
+
+if [ "$1" = "--app" ] && [ "$2" = "codex" ] && [ "$3" = "provider" ] && [ "$4" = "current" ]; then
+  echo "current provider: codex-relay"
+  exit 0
+fi
+if [ "$1" = "--app" ] && [ "$2" = "codex" ] && [ "$3" = "env" ] && [ "$4" = "check" ]; then
+  echo "env ok"
+  exit 0
+fi
+if [ "$1" = "--app" ] && [ "$2" = "codex" ] && [ "$3" = "provider" ] && [ "$4" = "switch" ]; then
+  echo "switched $5"
+  exit 0
+fi
+echo "unexpected cc-switch args: $*" >&2
+exit 1
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatalf("write cc-switch stub: %v", err)
+	}
+	return script
+}
+
 func TestRunner_ReviewNew(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "stub.log")
 	writeStub(t, logPath)
@@ -170,6 +205,49 @@ func TestRunner_ReviewNew(t *testing.T) {
 	// a new review must NOT be a resume.
 	if strings.Contains(log, "ARG[1]=resume") {
 		t.Errorf("new review incorrectly issued a resume; log:\n%s", log)
+	}
+}
+
+func TestRunner_ReviewSwitchesCodexProvider(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "stub.log")
+	writeStub(t, logPath)
+	ccSwitchBin := writeCCSwitchStub(t, logPath)
+	ccSwitchDir := t.TempDir()
+
+	r := New(Options{
+		CodexHome:          t.TempDir(),
+		CCSwitchBin:        ccSwitchBin,
+		CCSwitchConfigDir:  ccSwitchDir,
+		CCSwitchProviderID: "codex-relay",
+	})
+
+	if _, err := r.Review(context.Background(), model.CodexInput{
+		Worktree: t.TempDir(),
+		BaseRef:  "main",
+	}); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+
+	logb, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read stub log: %v", err)
+	}
+	log := string(logb)
+	for _, want := range []string{
+		"CC_SWITCH_CONFIG_DIR=" + ccSwitchDir,
+		"CCARG[0]=--app",
+		"CCARG[1]=codex",
+		"CCARG[2]=provider",
+		"CCARG[3]=switch",
+		"CCARG[4]=codex-relay",
+		"ARG[0]=exec",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("missing %q in log:\n%s", want, log)
+		}
+	}
+	if strings.Index(log, "CCARG[3]=switch") > strings.Index(log, "ARG[0]=exec") {
+		t.Fatalf("cc-switch provider switch must run before codex exec:\n%s", log)
 	}
 }
 
@@ -270,6 +348,36 @@ func TestRunner_ReviewCustomSandbox(t *testing.T) {
 	}
 }
 
+func TestRunner_ReviewCustomModelAndReasoningEffort(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "stub.log")
+	writeStub(t, logPath)
+
+	r := New(Options{
+		CodexHome:       t.TempDir(),
+		Model:           "gpt-5.5",
+		ReasoningEffort: "xhigh",
+	})
+
+	if _, err := r.Review(context.Background(), model.CodexInput{
+		Worktree: t.TempDir(),
+		BaseRef:  "main",
+	}); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+
+	logb, _ := os.ReadFile(logPath)
+	log := string(logb)
+	for _, want := range []string{
+		"--model",
+		"gpt-5.5",
+		"model_reasoning_effort=\"xhigh\"",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("missing %q in args:\n%s", want, log)
+		}
+	}
+}
+
 func TestRunner_Ask(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "stub.log")
 	writeStub(t, logPath)
@@ -338,6 +446,24 @@ func TestRunner_Status(t *testing.T) {
 	}
 	if !strings.Contains(out, "Logged in using ChatGPT account") {
 		t.Errorf("Status = %q", out)
+	}
+}
+
+func TestRunner_StatusWithCCSwitchProvider(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "stub.log")
+	writeStub(t, logPath)
+	ccSwitchBin := writeCCSwitchStub(t, logPath)
+
+	r := New(Options{CCSwitchBin: ccSwitchBin, CCSwitchProviderID: "codex-relay"})
+	out, err := r.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "cc-switch current:") || !strings.Contains(out, "current provider: codex-relay") {
+		t.Fatalf("Status missing cc-switch current provider:\n%s", out)
+	}
+	if !strings.Contains(out, "cc-switch env:") || !strings.Contains(out, "env ok") {
+		t.Fatalf("Status missing cc-switch env check:\n%s", out)
 	}
 }
 

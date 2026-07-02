@@ -21,6 +21,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
 
 # ---------- runtime stage ----------
 FROM debian:bookworm-slim AS runtime
+ARG CC_SWITCH_VERSION=5.8.6
 
 # git: gitcache mirrors/worktrees. node: runs the codex CLI. ca-certs+curl: TLS + healthcheck.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -33,11 +34,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && npm install -g @openai/codex@0.135.0 @anthropic-ai/claude-code \
     && arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
-        amd64) cc_arch="linux-x64-musl" ;; \
-        arm64) cc_arch="linux-arm64-musl" ;; \
+        amd64) cc_arch="linux-x64-musl"; cc_sha256="6b6d7d163d64355e5d0d047244fa6a7538b54cc5017d9c2eb97bf9babd339978" ;; \
+        arm64) cc_arch="linux-arm64-musl"; cc_sha256="c2a26abb12314bf60e56c885fdb71dfe13f4b548aa5497526950ac3b5d02bfd1" ;; \
         *) echo "unsupported arch for cc-switch: $arch" >&2; exit 1 ;; \
       esac \
-    && curl -fsSL -o /tmp/cc-switch.tar.gz "https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-${cc_arch}.tar.gz" \
+    && curl -fsSL -o /tmp/cc-switch.tar.gz "https://github.com/SaladDay/cc-switch-cli/releases/download/v${CC_SWITCH_VERSION}/cc-switch-cli-${cc_arch}.tar.gz" \
+    && echo "${cc_sha256}  /tmp/cc-switch.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/cc-switch.tar.gz -C /tmp \
     && install -m 0755 /tmp/cc-switch /usr/local/bin/cc-switch \
     && rm -f /tmp/cc-switch.tar.gz /tmp/cc-switch \
@@ -56,7 +58,8 @@ ENV LISTEN_ADDR=:8080 \
     CACHE_DIR=/cache \
     WORK_DIR=/work \
     CODEX_HOME=/codex-home \
-    CODEX_AUTH_MODE=authfile \
+    CODEX_AUTH_MODE=ccswitch \
+    CODEX_REASONING_EFFORT= \
     CLAUDE_HOME=/claude-home \
     CC_SWITCH_CONFIG_DIR=/cc-switch
 

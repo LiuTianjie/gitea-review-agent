@@ -139,11 +139,15 @@ func main() {
 		console.SkillGeneratorFunc(func(ctx context.Context, in model.SkillGenerationInput) (string, error) {
 			snap := configSnapshot()
 			runner := codex.New(codex.Options{
-				CodexHome:   snap.CodexHome,
-				Model:       snap.Model,
-				APIKey:      snap.CodexAPIKey,
-				SandboxMode: snap.CodexSandbox,
-				Timeout:     snap.Timeout,
+				CodexHome:          snap.CodexHome,
+				Model:              snap.Model,
+				ReasoningEffort:    snap.CodexReasoningEffort,
+				APIKey:             codexAPIKeyForMode(snap),
+				CCSwitchConfigDir:  snap.CCSwitchConfigDir,
+				UseCCSwitch:        snap.CodexAuthMode == config.AuthModeCCSwitch,
+				CCSwitchProviderID: codexProviderForMode(snap),
+				SandboxMode:        snap.CodexSandbox,
+				Timeout:            snap.Timeout,
 			})
 			return runner.GenerateText(ctx, os.TempDir(), console.BuildProjectSkillPrompt(in))
 		}),
@@ -187,13 +191,15 @@ func buildReviewers(cfg *config.Config) []model.Reviewer {
 		return nil
 	}
 	codexOpts := codex.Options{
-		CodexHome:   cfg.CodexHome,
-		Model:       cfg.Model,
-		SandboxMode: cfg.CodexSandbox,
-		Timeout:     cfg.Timeout,
-	}
-	if cfg.CodexAuthMode == config.AuthModeAPIKey {
-		codexOpts.APIKey = cfg.CodexAPIKey
+		CodexHome:          cfg.CodexHome,
+		Model:              cfg.Model,
+		ReasoningEffort:    cfg.CodexReasoningEffort,
+		APIKey:             codexAPIKeyForMode(cfg),
+		CCSwitchConfigDir:  cfg.CCSwitchConfigDir,
+		UseCCSwitch:        cfg.CodexAuthMode == config.AuthModeCCSwitch,
+		CCSwitchProviderID: codexProviderForMode(cfg),
+		SandboxMode:        cfg.CodexSandbox,
+		Timeout:            cfg.Timeout,
 	}
 	reviewers := []model.Reviewer{codex.New(codexOpts)}
 	if cfg.ClaudeEnabled {
@@ -222,6 +228,20 @@ func buildReviewers(cfg *config.Config) []model.Reviewer {
 		}))
 	}
 	return reviewers
+}
+
+func codexAPIKeyForMode(cfg *config.Config) string {
+	if cfg != nil && cfg.CodexAuthMode == config.AuthModeAPIKey {
+		return cfg.CodexAPIKey
+	}
+	return ""
+}
+
+func codexProviderForMode(cfg *config.Config) string {
+	if cfg != nil && cfg.CodexAuthMode == config.AuthModeCCSwitch {
+		return cfg.CodexCCSwitchProvider
+	}
+	return ""
 }
 
 func buildStatusFns(cfg *config.Config) map[string]console.StatusFunc {

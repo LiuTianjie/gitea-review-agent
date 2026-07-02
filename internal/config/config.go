@@ -15,6 +15,7 @@ import (
 
 // CodexAuthMode selects how codex authenticates.
 const (
+	AuthModeCCSwitch = "ccswitch" // cc-switch manages Codex provider/config.
 	AuthModeAuthFile = "authfile" // <CodexHome>/auth.json (refresh-token login)
 	AuthModeAPIKey   = "apikey"   // CODEX_API_KEY env / setting
 )
@@ -39,7 +40,7 @@ const (
 	DefaultClaudeModel     = "sonnet"
 	DefaultMiniMaxModel    = ""
 	DefaultMiniMaxProvider = ""
-	DefaultAuthMode        = AuthModeAuthFile
+	DefaultAuthMode        = AuthModeCCSwitch
 	DefaultSandboxMode     = SandboxReadOnly
 	DefaultConcurrency     = 5
 	DefaultTimeout         = 30 * time.Minute
@@ -67,10 +68,12 @@ type Config struct {
 	GiteaTimeout  time.Duration
 
 	// Codex
-	Model         string
-	CodexAuthMode string
-	CodexAPIKey   string
-	CodexSandbox  string
+	Model                 string
+	CodexReasoningEffort  string
+	CodexAuthMode         string
+	CodexAPIKey           string
+	CodexCCSwitchProvider string
+	CodexSandbox          string
 
 	// Claude
 	ClaudeEnabled      bool
@@ -118,39 +121,41 @@ func (c *Config) Clone() *Config {
 // for any variable that is unset or empty.
 func LoadEnv() *Config {
 	c := &Config{
-		ListenAddr:          getEnv("LISTEN_ADDR", DefaultListenAddr),
-		DBPath:              getEnv("DB_PATH", DefaultDBPath),
-		CacheDir:            getEnv("CACHE_DIR", DefaultCacheDir),
-		WorkDir:             getEnv("WORK_DIR", DefaultWorkDir),
-		CodexHome:           getEnv("CODEX_HOME", DefaultCodexHome),
-		GiteaURL:            os.Getenv("GITEA_URL"),
-		GiteaToken:          os.Getenv("GITEA_TOKEN"),
-		WebhookSecret:       os.Getenv("WEBHOOK_SECRET"),
-		GiteaTimeout:        parseDuration(os.Getenv("GITEA_TIMEOUT"), DefaultGiteaTimeout),
-		Model:               getEnv("MODEL", DefaultModel),
-		CodexAuthMode:       normalizeAuthMode(getEnv("CODEX_AUTH_MODE", DefaultAuthMode)),
-		CodexAPIKey:         os.Getenv("CODEX_API_KEY"),
-		CodexSandbox:        normalizeSandboxMode(getEnv("CODEX_SANDBOX_MODE", DefaultSandboxMode)),
-		ClaudeEnabled:       parseBool(os.Getenv("CLAUDE_ENABLED"), false),
-		ClaudeModel:         getEnv("CLAUDE_MODEL", DefaultClaudeModel),
-		ClaudeAPIKey:        os.Getenv("CLAUDE_API_KEY"),
-		ClaudeBaseURL:       os.Getenv("CLAUDE_BASE_URL"),
-		ClaudeHome:          getEnv("CLAUDE_HOME", DefaultClaudeHome),
-		CCSwitchConfigDir:   getEnv("CC_SWITCH_CONFIG_DIR", DefaultCCSwitchDir),
-		CCSwitchProvider:    os.Getenv("CC_SWITCH_PROVIDER_ID"),
-		ClaudeMaxBudgetUSD:  parseFloat(os.Getenv("CLAUDE_MAX_BUDGET_USD"), DefaultClaudeBudget),
-		MiniMaxEnabled:      parseBool(os.Getenv("MINIMAX_ENABLED"), false),
-		MiniMaxModel:        getEnv("MINIMAX_MODEL", DefaultMiniMaxModel),
-		MiniMaxProvider:     getEnv("MINIMAX_PROVIDER_ID", DefaultMiniMaxProvider),
-		MiniMaxAPIKey:       os.Getenv("MINIMAX_API_KEY"),
-		MiniMaxBaseURL:      os.Getenv("MINIMAX_BASE_URL"),
-		MiniMaxMaxBudgetUSD: parseFloat(os.Getenv("MINIMAX_MAX_BUDGET_USD"), DefaultMiniMaxBudget),
-		AdminPassword:       os.Getenv("ADMIN_PASSWORD"),
-		TriggerKeywords:     parseList(os.Getenv("TRIGGER_KEYWORDS"), DefaultTriggerKeywords),
-		Concurrency:         parseInt(os.Getenv("CONCURRENCY"), DefaultConcurrency),
-		RepoAllowlist:       parseList(os.Getenv("REPO_ALLOWLIST"), nil),
-		Timeout:             parseDuration(os.Getenv("TIMEOUT"), DefaultTimeout),
-		SecretKey:           os.Getenv("SECRET_KEY"),
+		ListenAddr:            getEnv("LISTEN_ADDR", DefaultListenAddr),
+		DBPath:                getEnv("DB_PATH", DefaultDBPath),
+		CacheDir:              getEnv("CACHE_DIR", DefaultCacheDir),
+		WorkDir:               getEnv("WORK_DIR", DefaultWorkDir),
+		CodexHome:             getEnv("CODEX_HOME", DefaultCodexHome),
+		GiteaURL:              os.Getenv("GITEA_URL"),
+		GiteaToken:            os.Getenv("GITEA_TOKEN"),
+		WebhookSecret:         os.Getenv("WEBHOOK_SECRET"),
+		GiteaTimeout:          parseDuration(os.Getenv("GITEA_TIMEOUT"), DefaultGiteaTimeout),
+		Model:                 getEnv("MODEL", DefaultModel),
+		CodexReasoningEffort:  strings.TrimSpace(os.Getenv("CODEX_REASONING_EFFORT")),
+		CodexAuthMode:         normalizeAuthMode(getEnv("CODEX_AUTH_MODE", DefaultAuthMode)),
+		CodexAPIKey:           os.Getenv("CODEX_API_KEY"),
+		CodexCCSwitchProvider: os.Getenv("CODEX_CC_SWITCH_PROVIDER_ID"),
+		CodexSandbox:          normalizeSandboxMode(getEnv("CODEX_SANDBOX_MODE", DefaultSandboxMode)),
+		ClaudeEnabled:         parseBool(os.Getenv("CLAUDE_ENABLED"), false),
+		ClaudeModel:           getEnv("CLAUDE_MODEL", DefaultClaudeModel),
+		ClaudeAPIKey:          os.Getenv("CLAUDE_API_KEY"),
+		ClaudeBaseURL:         os.Getenv("CLAUDE_BASE_URL"),
+		ClaudeHome:            getEnv("CLAUDE_HOME", DefaultClaudeHome),
+		CCSwitchConfigDir:     getEnv("CC_SWITCH_CONFIG_DIR", DefaultCCSwitchDir),
+		CCSwitchProvider:      os.Getenv("CC_SWITCH_PROVIDER_ID"),
+		ClaudeMaxBudgetUSD:    parseFloat(os.Getenv("CLAUDE_MAX_BUDGET_USD"), DefaultClaudeBudget),
+		MiniMaxEnabled:        parseBool(os.Getenv("MINIMAX_ENABLED"), false),
+		MiniMaxModel:          getEnv("MINIMAX_MODEL", DefaultMiniMaxModel),
+		MiniMaxProvider:       getEnv("MINIMAX_PROVIDER_ID", DefaultMiniMaxProvider),
+		MiniMaxAPIKey:         os.Getenv("MINIMAX_API_KEY"),
+		MiniMaxBaseURL:        os.Getenv("MINIMAX_BASE_URL"),
+		MiniMaxMaxBudgetUSD:   parseFloat(os.Getenv("MINIMAX_MAX_BUDGET_USD"), DefaultMiniMaxBudget),
+		AdminPassword:         os.Getenv("ADMIN_PASSWORD"),
+		TriggerKeywords:       parseList(os.Getenv("TRIGGER_KEYWORDS"), DefaultTriggerKeywords),
+		Concurrency:           parseInt(os.Getenv("CONCURRENCY"), DefaultConcurrency),
+		RepoAllowlist:         parseList(os.Getenv("REPO_ALLOWLIST"), nil),
+		Timeout:               parseDuration(os.Getenv("TIMEOUT"), DefaultTimeout),
+		SecretKey:             os.Getenv("SECRET_KEY"),
 	}
 	return c
 }
@@ -175,13 +180,19 @@ func (c *Config) ApplyOverrides(settings map[string]string) {
 		c.GiteaTimeout = parseDuration(v, c.GiteaTimeout)
 	}
 	if v, ok := settings["model"]; ok {
-		c.Model = v
+		c.Model = strings.TrimSpace(v)
+	}
+	if v, ok := settings["codex_reasoning_effort"]; ok {
+		c.CodexReasoningEffort = strings.TrimSpace(v)
 	}
 	if v, ok := settings["codex_auth_mode"]; ok {
 		c.CodexAuthMode = normalizeAuthMode(v)
 	}
 	if v, ok := settings["codex_api_key"]; ok {
 		c.CodexAPIKey = v
+	}
+	if v, ok := settings["codex_cc_switch_provider_id"]; ok {
+		c.CodexCCSwitchProvider = strings.TrimSpace(v)
 	}
 	if v, ok := settings["codex_sandbox_mode"]; ok {
 		c.CodexSandbox = normalizeSandboxMode(v)
@@ -265,6 +276,8 @@ func (c *Config) ApplyOverrides(settings map[string]string) {
 // the console after boot) are reported via Warnings, not errors.
 func (c *Config) Validate() error {
 	switch c.CodexAuthMode {
+	case AuthModeCCSwitch:
+		// cc-switch may already have a current Codex provider; provider id is optional.
 	case AuthModeAuthFile:
 		// auth.json may be uploaded later from the console; nothing required here.
 	case AuthModeAPIKey:
@@ -272,8 +285,8 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("codex_auth_mode=apikey requires CODEX_API_KEY")
 		}
 	default:
-		return fmt.Errorf("invalid codex_auth_mode %q (want %q or %q)",
-			c.CodexAuthMode, AuthModeAuthFile, AuthModeAPIKey)
+		return fmt.Errorf("invalid codex_auth_mode %q (want %q, %q, or %q)",
+			c.CodexAuthMode, AuthModeCCSwitch, AuthModeAuthFile, AuthModeAPIKey)
 	}
 	if c.Concurrency < 1 {
 		return fmt.Errorf("concurrency must be >= 1, got %d", c.Concurrency)
@@ -398,6 +411,9 @@ func parseDuration(s string, def time.Duration) time.Duration {
 
 func normalizeAuthMode(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
+	if s == AuthModeCCSwitch || s == "cc-switch" {
+		return AuthModeCCSwitch
+	}
 	if s == AuthModeAPIKey {
 		return AuthModeAPIKey
 	}

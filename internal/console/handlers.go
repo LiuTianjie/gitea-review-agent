@@ -20,6 +20,7 @@ import (
 
 	"github.com/turning4th/codex-gitea/internal/config"
 	"github.com/turning4th/codex-gitea/internal/model"
+	_ "modernc.org/sqlite"
 )
 
 // consoleDist embeds the Vite-built React console so the service remains a
@@ -113,6 +114,7 @@ func (c *Console) Routes() http.Handler {
 	mux.HandleFunc("POST /admin/api/authfile", c.handlePostAuthFile)
 	mux.HandleFunc("GET /admin/api/status", c.handleStatus)
 	mux.HandleFunc("GET /admin/api/effective-config", c.handleEffectiveConfig)
+	mux.HandleFunc("GET /admin/api/cc-switch/codex-options", c.handleCCSwitchCodexOptions)
 	mux.HandleFunc("GET /admin/api/jobs", c.handleJobs)
 	mux.HandleFunc("GET /admin/api/jobs/stats", c.handleJobStats)
 	mux.HandleFunc("GET /admin/api/jobs/{id}", c.handleJobDetail)
@@ -315,34 +317,257 @@ func (c *Console) handleEffectiveConfig(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":                     true,
-		"gitea_url":              cfg.GiteaURL,
-		"gitea_token_set":        strings.TrimSpace(cfg.GiteaToken) != "",
-		"webhook_secret_set":     strings.TrimSpace(cfg.WebhookSecret) != "",
-		"gitea_timeout":          cfg.GiteaTimeout.String(),
-		"model":                  cfg.Model,
-		"codex_auth_mode":        cfg.CodexAuthMode,
-		"codex_sandbox_mode":     cfg.CodexSandbox,
-		"claude_enabled":         cfg.ClaudeEnabled,
-		"claude_model":           cfg.ClaudeModel,
-		"claude_api_key_set":     strings.TrimSpace(cfg.ClaudeAPIKey) != "",
-		"claude_base_url":        cfg.ClaudeBaseURL,
-		"claude_home":            cfg.ClaudeHome,
-		"cc_switch_config_dir":   cfg.CCSwitchConfigDir,
-		"cc_switch_provider_id":  cfg.CCSwitchProvider,
-		"claude_max_budget_usd":  cfg.ClaudeMaxBudgetUSD,
-		"minimax_enabled":        cfg.MiniMaxEnabled,
-		"minimax_model":          cfg.MiniMaxModel,
-		"minimax_provider_id":    cfg.MiniMaxProvider,
-		"minimax_api_key_set":    strings.TrimSpace(cfg.MiniMaxAPIKey) != "",
-		"minimax_base_url":       cfg.MiniMaxBaseURL,
-		"minimax_max_budget_usd": cfg.MiniMaxMaxBudgetUSD,
-		"concurrency":            cfg.Concurrency,
-		"trigger_keywords":       strings.Join(cfg.TriggerKeywords, ","),
-		"repo_allowlist":         strings.Join(cfg.RepoAllowlist, ","),
-		"config_source":          os.Getenv("CONFIG_SOURCE"),
-		"runtime_reload_note":    "保存设置会写入数据库；后续 review 会热生效 Gitea token/timeout、Webhook 密钥、触发关键词、仓库白名单和 reviewer 配置；监听地址和 worker 并发仍需重启服务。",
+		"ok":                          true,
+		"gitea_url":                   cfg.GiteaURL,
+		"gitea_token_set":             strings.TrimSpace(cfg.GiteaToken) != "",
+		"webhook_secret_set":          strings.TrimSpace(cfg.WebhookSecret) != "",
+		"gitea_timeout":               cfg.GiteaTimeout.String(),
+		"model":                       cfg.Model,
+		"codex_reasoning_effort":      cfg.CodexReasoningEffort,
+		"codex_auth_mode":             cfg.CodexAuthMode,
+		"codex_cc_switch_provider_id": cfg.CodexCCSwitchProvider,
+		"codex_sandbox_mode":          cfg.CodexSandbox,
+		"claude_enabled":              cfg.ClaudeEnabled,
+		"claude_model":                cfg.ClaudeModel,
+		"claude_api_key_set":          strings.TrimSpace(cfg.ClaudeAPIKey) != "",
+		"claude_base_url":             cfg.ClaudeBaseURL,
+		"claude_home":                 cfg.ClaudeHome,
+		"cc_switch_config_dir":        cfg.CCSwitchConfigDir,
+		"cc_switch_provider_id":       cfg.CCSwitchProvider,
+		"claude_max_budget_usd":       cfg.ClaudeMaxBudgetUSD,
+		"minimax_enabled":             cfg.MiniMaxEnabled,
+		"minimax_model":               cfg.MiniMaxModel,
+		"minimax_provider_id":         cfg.MiniMaxProvider,
+		"minimax_api_key_set":         strings.TrimSpace(cfg.MiniMaxAPIKey) != "",
+		"minimax_base_url":            cfg.MiniMaxBaseURL,
+		"minimax_max_budget_usd":      cfg.MiniMaxMaxBudgetUSD,
+		"concurrency":                 cfg.Concurrency,
+		"trigger_keywords":            strings.Join(cfg.TriggerKeywords, ","),
+		"repo_allowlist":              strings.Join(cfg.RepoAllowlist, ","),
+		"config_source":               os.Getenv("CONFIG_SOURCE"),
+		"runtime_reload_note":         "保存设置会写入数据库；后续 review 会热生效 Gitea token/timeout、Webhook 密钥、触发关键词、仓库白名单和 reviewer 配置；监听地址和 worker 并发仍需重启服务。",
 	})
+}
+
+type ccSwitchCodexProviderView struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	Current         bool   `json:"current"`
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+}
+
+type ccSwitchModelView struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name,omitempty"`
+}
+
+type ccSwitchCodexOptionsResponse struct {
+	OK               bool                        `json:"ok"`
+	Path             string                      `json:"path"`
+	Providers        []ccSwitchCodexProviderView `json:"providers"`
+	Models           []ccSwitchModelView         `json:"models"`
+	ReasoningEfforts []string                    `json:"reasoning_efforts"`
+	Error            string                      `json:"error,omitempty"`
+}
+
+func (c *Console) handleCCSwitchCodexOptions(w http.ResponseWriter, r *http.Request) {
+	cfg := c.currentConfig()
+	ccDir := config.DefaultCCSwitchDir
+	if cfg != nil && strings.TrimSpace(cfg.CCSwitchConfigDir) != "" {
+		ccDir = strings.TrimSpace(cfg.CCSwitchConfigDir)
+	}
+	dbPath := filepath.Join(ccDir, "cc-switch.db")
+
+	resp := ccSwitchCodexOptionsResponse{
+		OK:               true,
+		Path:             dbPath,
+		ReasoningEfforts: defaultReasoningEfforts(),
+	}
+	if cfg != nil {
+		resp.Models = appendModelOption(resp.Models, cfg.Model, "")
+		resp.ReasoningEfforts = appendUnique(resp.ReasoningEfforts, cfg.CodexReasoningEffort)
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			resp.Error = err.Error()
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		resp.Error = err.Error()
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	defer db.Close()
+
+	providers, err := readCCSwitchCodexProviders(r.Context(), db)
+	if err != nil {
+		resp.Error = err.Error()
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	resp.Providers = providers
+	for _, provider := range providers {
+		resp.Models = appendModelOption(resp.Models, provider.Model, "")
+		resp.ReasoningEfforts = appendUnique(resp.ReasoningEfforts, provider.ReasoningEffort)
+	}
+
+	models, err := readCCSwitchCodexModels(r.Context(), db)
+	if err == nil {
+		for _, model := range models {
+			resp.Models = appendModelOption(resp.Models, model.ID, model.DisplayName)
+		}
+	} else if resp.Error == "" && !errors.Is(err, sql.ErrNoRows) {
+		resp.Error = err.Error()
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func readCCSwitchCodexProviders(ctx context.Context, db *sql.DB) ([]ccSwitchCodexProviderView, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT id, name, settings_config, is_current
+FROM providers
+WHERE app_type = 'codex'
+ORDER BY is_current DESC, name ASC, id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var providers []ccSwitchCodexProviderView
+	for rows.Next() {
+		var id, name, settingsConfig string
+		var isCurrent bool
+		if err := rows.Scan(&id, &name, &settingsConfig, &isCurrent); err != nil {
+			return nil, err
+		}
+		model, effort := parseCCSwitchCodexConfig(settingsConfig)
+		providers = append(providers, ccSwitchCodexProviderView{
+			ID:              id,
+			Name:            name,
+			Current:         isCurrent,
+			Model:           model,
+			ReasoningEffort: effort,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return providers, nil
+}
+
+func readCCSwitchCodexModels(ctx context.Context, db *sql.DB) ([]ccSwitchModelView, error) {
+	rows, err := db.QueryContext(ctx, `SELECT model_id, display_name FROM model_pricing ORDER BY model_id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var models []ccSwitchModelView
+	for rows.Next() {
+		var id, display string
+		if err := rows.Scan(&id, &display); err != nil {
+			return nil, err
+		}
+		if !isCodexModelID(id) {
+			continue
+		}
+		models = append(models, ccSwitchModelView{ID: id, DisplayName: display})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return models, nil
+}
+
+func parseCCSwitchCodexConfig(settingsConfig string) (string, string) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(settingsConfig), &raw); err != nil {
+		return "", ""
+	}
+	var configText string
+	if v, ok := raw["config"]; ok {
+		_ = json.Unmarshal(v, &configText)
+	}
+	if configText == "" {
+		return "", ""
+	}
+	return parseCodexTOMLModelConfig(configText)
+}
+
+func parseCodexTOMLModelConfig(configText string) (string, string) {
+	var modelID, reasoning string
+	for _, line := range strings.Split(configText, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if i := strings.Index(value, " #"); i >= 0 {
+			value = strings.TrimSpace(value[:i])
+		}
+		if unquoted, err := strconv.Unquote(value); err == nil {
+			value = unquoted
+		}
+		switch key {
+		case "model":
+			modelID = strings.TrimSpace(value)
+		case "model_reasoning_effort":
+			reasoning = strings.TrimSpace(value)
+		}
+	}
+	return modelID, reasoning
+}
+
+func defaultReasoningEfforts() []string {
+	return []string{"minimal", "low", "medium", "high", "xhigh"}
+}
+
+func appendUnique(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func appendModelOption(models []ccSwitchModelView, id, display string) []ccSwitchModelView {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return models
+	}
+	for _, existing := range models {
+		if existing.ID == id {
+			return models
+		}
+	}
+	return append(models, ccSwitchModelView{ID: id, DisplayName: strings.TrimSpace(display)})
+}
+
+func isCodexModelID(id string) bool {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if id == "" || strings.HasPrefix(id, "claude-") {
+		return false
+	}
+	return strings.HasPrefix(id, "gpt-") ||
+		strings.HasPrefix(id, "o1") ||
+		strings.HasPrefix(id, "o3") ||
+		strings.HasPrefix(id, "o4") ||
+		strings.HasPrefix(id, "chatgpt-")
 }
 
 // jobView is the JSON shape returned to the console, with PRRef flattened.

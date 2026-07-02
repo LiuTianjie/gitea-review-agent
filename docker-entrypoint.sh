@@ -1,6 +1,6 @@
 #!/bin/sh
 # Prepare writable volumes then drop to the unprivileged `app` user.
-# CODEX_HOME must stay writable so codex can refresh its OAuth token in place.
+# CODEX_HOME and CC_SWITCH_CONFIG_DIR must stay writable for live provider state.
 set -e
 
 for d in /data /cache /work /codex-home /claude-home /cc-switch; do

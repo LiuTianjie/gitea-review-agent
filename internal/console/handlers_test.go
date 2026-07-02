@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	"github.com/turning4th/codex-gitea/internal/config"
 	"github.com/turning4th/codex-gitea/internal/model"
 	"github.com/turning4th/codex-gitea/internal/store"
+	_ "modernc.org/sqlite"
 )
 
 const testPassword = "s3cret-pw"
@@ -78,6 +80,15 @@ func loginCookie(t *testing.T, h http.Handler) *http.Cookie {
 	return nil
 }
 
+func containsString(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestNoAuthRedirectsToLogin(t *testing.T) {
 	c, _ := newTestConsole(t, nil)
 	h := c.Routes()
@@ -88,6 +99,95 @@ func TestNoAuthRedirectsToLogin(t *testing.T) {
 	}
 	if loc := w.Header().Get("Location"); loc != "/admin/login" {
 		t.Errorf("no auth redirect = %q, want /admin/login", loc)
+	}
+}
+
+func TestCCSwitchCodexOptionsReadProvidersAndModels(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "console.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	ccDir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(ccDir, "cc-switch.db"))
+	if err != nil {
+		t.Fatalf("open cc-switch db: %v", err)
+	}
+	defer db.Close()
+	_, err = db.Exec(`
+CREATE TABLE providers (
+  id TEXT NOT NULL,
+  app_type TEXT NOT NULL,
+  name TEXT NOT NULL,
+  settings_config TEXT NOT NULL,
+  is_current BOOLEAN NOT NULL DEFAULT 0,
+  PRIMARY KEY (id, app_type)
+);
+CREATE TABLE model_pricing (
+  model_id TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL
+);
+INSERT INTO providers (id, app_type, name, settings_config, is_current)
+VALUES
+  ('codex-relay', 'codex', 'Relay', '{"config":"model = \"gpt-5.5\"\nmodel_reasoning_effort = \"xhigh\"\n"}', 1),
+  ('claude-relay', 'claude', 'Claude Relay', '{"env":{}}', 0);
+INSERT INTO model_pricing (model_id, display_name)
+VALUES ('gpt-5.5', 'GPT-5.5'), ('gpt-5.5-mini', 'GPT-5.5 Mini'), ('claude-sonnet-4-6', 'Claude Sonnet');
+`)
+	if err != nil {
+		t.Fatalf("seed cc-switch db: %v", err)
+	}
+
+	cfg := &config.Config{
+		AdminPassword:         testPassword,
+		CCSwitchConfigDir:     ccDir,
+		Model:                 "gpt-5-codex",
+		CodexReasoningEffort:  "high",
+		CodexCCSwitchProvider: "codex-relay",
+	}
+	c := New(st, cfg, filepath.Join(t.TempDir(), "codex-home"))
+	w := do(t, c.Routes(), "GET", "/admin/api/cc-switch/codex-options", "", true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	var body struct {
+		OK        bool `json:"ok"`
+		Providers []struct {
+			ID              string `json:"id"`
+			Name            string `json:"name"`
+			Current         bool   `json:"current"`
+			Model           string `json:"model"`
+			ReasoningEffort string `json:"reasoning_effort"`
+		} `json:"providers"`
+		Models []struct {
+			ID string `json:"id"`
+		} `json:"models"`
+		ReasoningEfforts []string `json:"reasoning_efforts"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse body: %v\n%s", err, w.Body.String())
+	}
+	if !body.OK || len(body.Providers) != 1 {
+		t.Fatalf("options body = %+v", body)
+	}
+	if p := body.Providers[0]; p.ID != "codex-relay" || !p.Current || p.Model != "gpt-5.5" || p.ReasoningEffort != "xhigh" {
+		t.Fatalf("provider = %+v", p)
+	}
+	var sawModel bool
+	for _, m := range body.Models {
+		if m.ID == "gpt-5.5" {
+			sawModel = true
+		}
+		if strings.HasPrefix(m.ID, "claude-") {
+			t.Fatalf("unexpected claude model in codex options: %+v", m)
+		}
+	}
+	if !sawModel {
+		t.Fatalf("models missing gpt-5.5: %+v", body.Models)
+	}
+	if !containsString(body.ReasoningEfforts, "xhigh") {
+		t.Fatalf("reasoning efforts missing xhigh: %+v", body.ReasoningEfforts)
 	}
 }
 

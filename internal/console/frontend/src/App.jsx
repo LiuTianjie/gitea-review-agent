@@ -19,7 +19,6 @@ import {
   Save,
   Settings,
   Sparkles,
-  Upload,
   Users,
   XCircle
 } from 'lucide-react'
@@ -34,9 +33,11 @@ const FIELDS = [
   'gitea_timeout',
   'webhook_secret',
   'model',
+  'codex_reasoning_effort',
   'trigger_keywords',
   'concurrency',
   'codex_auth_mode',
+  'codex_cc_switch_provider_id',
   'codex_api_key',
   'codex_sandbox_mode',
   'claude_enabled',
@@ -59,18 +60,21 @@ const FIELDS = [
 
 const FIELD_GROUPS = {
   common: ['gitea_url', 'gitea_token', 'gitea_timeout', 'webhook_secret', 'trigger_keywords', 'repo_allowlist', 'concurrency', 'timeout'],
-  codex: ['model', 'codex_auth_mode', 'codex_sandbox_mode', 'codex_api_key'],
+  codex: ['model', 'codex_reasoning_effort', 'codex_auth_mode', 'codex_cc_switch_provider_id', 'codex_sandbox_mode', 'codex_api_key'],
   claude: ['claude_enabled', 'claude_model', 'claude_api_key', 'claude_base_url', 'claude_home', 'cc_switch_config_dir', 'cc_switch_provider_id', 'claude_max_budget_usd'],
   minimax: ['minimax_enabled', 'minimax_model', 'minimax_provider_id', 'minimax_api_key', 'minimax_base_url', 'minimax_max_budget_usd']
 }
 
 const DEFAULT_SETTINGS = {
+  codex_auth_mode: 'ccswitch',
   claude_model: 'sonnet',
   claude_home: '/claude-home',
   cc_switch_config_dir: '/cc-switch',
   claude_max_budget_usd: '0.3',
   minimax_max_budget_usd: '0.3'
 }
+
+const DEFAULT_REASONING_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh']
 
 const SECRET_FIELDS = new Set(['gitea_token', 'webhook_secret', 'codex_api_key', 'claude_api_key', 'minimax_api_key'])
 
@@ -80,11 +84,13 @@ const SETTING_META = {
   gitea_timeout: { label: 'Gitea Timeout', placeholder: '90s' },
   webhook_secret: { label: 'Webhook Secret', secret: true },
   model: { label: 'Codex Model', placeholder: 'gpt-5-codex' },
+  codex_reasoning_effort: { label: 'Codex 思考强度', type: 'select', options: DEFAULT_REASONING_EFFORTS },
   trigger_keywords: { label: '触发关键词', placeholder: '/review,@review' },
   repo_allowlist: { label: '仓库白名单', placeholder: 'owner/repo,owner/repo2' },
   concurrency: { label: 'Worker 并发', placeholder: '5' },
   timeout: { label: 'Review Timeout', placeholder: '30m' },
-  codex_auth_mode: { label: 'Codex Auth Mode', placeholder: 'authfile' },
+  codex_auth_mode: { label: 'Codex Auth Mode', type: 'select', options: ['ccswitch', 'authfile', 'apikey'] },
+  codex_cc_switch_provider_id: { label: 'Codex cc-switch Provider' },
   codex_sandbox_mode: { label: 'Codex Sandbox', placeholder: 'read-only' },
   codex_api_key: { label: 'Codex API Key', secret: true },
   claude_enabled: { label: '启用 Claude', type: 'select', options: ['false', 'true'] },
@@ -156,6 +162,15 @@ function percent(value) {
 function byPreferredOrder(order) {
   const rank = new Map(order.map((item, index) => [item, index]))
   return ([a], [b]) => (rank.get(a) ?? 999) - (rank.get(b) ?? 999) || a.localeCompare(b)
+}
+
+function uniqueValues(values) {
+  const out = []
+  values.forEach((value) => {
+    const item = String(value || '').trim()
+    if (item && !out.includes(item)) out.push(item)
+  })
+  return out
 }
 
 function encodePath(path) {
@@ -1251,10 +1266,9 @@ function SourceLink({ baseURL, finding, actionLabel = '打开', prominent = fals
 function ConfigPanel() {
   const [settings, setSettings] = useState(() => ({ ...DEFAULT_SETTINGS }))
   const [effectiveConfig, setEffectiveConfig] = useState(null)
+  const [ccSwitchOptions, setCCSwitchOptions] = useState(null)
   const [status, setStatus] = useState(null)
   const [settingsMessage, setSettingsMessage] = useState(null)
-  const [authMessage, setAuthMessage] = useState(null)
-  const [authFile, setAuthFile] = useState(null)
 
   const loadSettings = useCallback(async () => {
     try {
@@ -1275,6 +1289,15 @@ function ConfigPanel() {
     }
   }, [])
 
+  const loadCCSwitchOptions = useCallback(async () => {
+    try {
+      const payload = await fetchJSON('/admin/api/cc-switch/codex-options', {}, 10000)
+      setCCSwitchOptions(payload)
+    } catch (error) {
+      setSettingsMessage({ ok: false, text: `读取 cc-switch 选项失败：${error.message}` })
+    }
+  }, [])
+
   const checkStatus = useCallback(async () => {
     try {
       const payload = await fetchJSON('/admin/api/status', {}, 20000)
@@ -1287,7 +1310,30 @@ function ConfigPanel() {
   useEffect(() => {
     loadSettings()
     loadEffectiveConfig()
-  }, [loadSettings, loadEffectiveConfig])
+    loadCCSwitchOptions()
+  }, [loadSettings, loadEffectiveConfig, loadCCSwitchOptions])
+
+  const fieldMeta = useMemo(() => {
+    const modelOptions = uniqueValues([
+      settings.model,
+      ...(ccSwitchOptions?.models || []).map((item) => item.id)
+    ])
+    const providerOptions = uniqueValues([
+      settings.codex_cc_switch_provider_id,
+      ...(ccSwitchOptions?.providers || []).map((item) => item.id)
+    ])
+    const reasoningOptions = ['', ...uniqueValues([
+      settings.codex_reasoning_effort,
+      ...(ccSwitchOptions?.reasoning_efforts || []),
+      ...DEFAULT_REASONING_EFFORTS
+    ])]
+    return {
+      ...SETTING_META,
+      model: { ...SETTING_META.model, type: 'datalist', options: modelOptions },
+      codex_cc_switch_provider_id: { ...SETTING_META.codex_cc_switch_provider_id, type: 'datalist', options: providerOptions },
+      codex_reasoning_effort: { ...SETTING_META.codex_reasoning_effort, options: reasoningOptions }
+    }
+  }, [settings.model, settings.codex_cc_switch_provider_id, settings.codex_reasoning_effort, ccSwitchOptions])
 
   const setField = (key, value) => {
     setSettings((current) => ({ ...current, [key]: value }))
@@ -1311,28 +1357,9 @@ function ConfigPanel() {
         body: JSON.stringify({ settings: payload })
       }, 12000)
       setSettingsMessage({ ok: true, text: `已保存 ${label}（${result.updated || 0} 项）` })
-      await Promise.all([loadSettings(), loadEffectiveConfig(), checkStatus()])
+      await Promise.all([loadSettings(), loadEffectiveConfig(), loadCCSwitchOptions(), checkStatus()])
     } catch (error) {
       setSettingsMessage({ ok: false, text: `保存失败：${error.message}` })
-    }
-  }
-
-  const uploadAuth = async () => {
-    if (!authFile) {
-      setAuthMessage({ ok: false, text: '请先选择 auth.json' })
-      return
-    }
-    try {
-      const text = await authFile.text()
-      const result = await fetchJSON('/admin/api/authfile', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: text
-      }, 12000)
-      setAuthMessage({ ok: true, text: `已上传到 ${result.path}` })
-      await checkStatus()
-    } catch (error) {
-      setAuthMessage({ ok: false, text: `上传失败：${error.message}` })
     }
   }
 
@@ -1344,31 +1371,17 @@ function ConfigPanel() {
           <p>保存后写入数据库，后续 review 读取最新设置。</p>
         </div>
         <div className="toolbar">
-          <IconButton icon={RefreshCw} onClick={() => { loadSettings(); loadEffectiveConfig(); }}>刷新</IconButton>
+          <IconButton icon={RefreshCw} onClick={() => { loadSettings(); loadEffectiveConfig(); loadCCSwitchOptions(); }}>刷新</IconButton>
           <IconButton icon={Activity} onClick={checkStatus}>检测 Reviewer</IconButton>
         </div>
       </div>
 
       <Message message={settingsMessage} />
 
-      <ConfigGroup title="通用" keys={FIELD_GROUPS.common} settings={settings} setField={setField} onSave={() => saveGroup(FIELD_GROUPS.common, '通用设置')} />
-      <ConfigGroup title="Codex" keys={FIELD_GROUPS.codex} settings={settings} setField={setField} onSave={() => saveGroup(FIELD_GROUPS.codex, 'Codex 设置')} />
-      <ConfigGroup title="Claude" keys={FIELD_GROUPS.claude} settings={settings} setField={setField} onSave={() => saveGroup(FIELD_GROUPS.claude, 'Claude 设置')} />
-      <ConfigGroup title="MiniMax" keys={FIELD_GROUPS.minimax} settings={settings} setField={setField} onSave={() => saveGroup(FIELD_GROUPS.minimax, 'MiniMax 设置')} />
-
-      <section className="config-group">
-        <div className="group-head">
-          <div>
-            <h3>Codex Auth</h3>
-            <p>上传本机 `~/.codex/auth.json`，用于 authfile 模式。</p>
-          </div>
-          <div className="toolbar">
-            <input className="file-input" type="file" accept="application/json,.json" onChange={(event) => setAuthFile(event.target.files?.[0] || null)} />
-            <IconButton icon={Upload} onClick={uploadAuth}>上传</IconButton>
-          </div>
-        </div>
-        <Message message={authMessage} />
-      </section>
+      <ConfigGroup title="通用" keys={FIELD_GROUPS.common} settings={settings} fieldMeta={fieldMeta} setField={setField} onSave={() => saveGroup(FIELD_GROUPS.common, '通用设置')} />
+      <ConfigGroup title="Codex" keys={FIELD_GROUPS.codex} settings={settings} fieldMeta={fieldMeta} setField={setField} onSave={() => saveGroup(FIELD_GROUPS.codex, 'Codex 设置')} />
+      <ConfigGroup title="Claude" keys={FIELD_GROUPS.claude} settings={settings} fieldMeta={fieldMeta} setField={setField} onSave={() => saveGroup(FIELD_GROUPS.claude, 'Claude 设置')} />
+      <ConfigGroup title="MiniMax" keys={FIELD_GROUPS.minimax} settings={settings} fieldMeta={fieldMeta} setField={setField} onSave={() => saveGroup(FIELD_GROUPS.minimax, 'MiniMax 设置')} />
 
       <section className="config-group">
         <div className="group-head">
@@ -1385,7 +1398,7 @@ function ConfigPanel() {
   )
 }
 
-function ConfigGroup({ title, keys, settings, setField, onSave }) {
+function ConfigGroup({ title, keys, settings, fieldMeta, setField, onSave }) {
   return (
     <section className="config-group">
       <div className="group-head">
@@ -1393,22 +1406,37 @@ function ConfigGroup({ title, keys, settings, setField, onSave }) {
         <IconButton icon={Save} onClick={onSave}>保存</IconButton>
       </div>
       <div className="form-grid">
-        {keys.map((key) => <SettingField key={key} name={key} value={settings[key] ?? ''} onChange={(value) => setField(key, value)} />)}
+        {keys.map((key) => <SettingField key={key} name={key} value={settings[key] ?? ''} meta={fieldMeta[key]} onChange={(value) => setField(key, value)} />)}
       </div>
     </section>
   )
 }
 
-function SettingField({ name, value, onChange }) {
-  const meta = SETTING_META[name] || { label: name }
+function SettingField({ name, value, meta: fieldMeta, onChange }) {
+  const meta = fieldMeta || SETTING_META[name] || { label: name }
   const id = `setting-${name}`
   return (
     <label className="field" htmlFor={id}>
       <span>{meta.label}</span>
       {meta.type === 'select' ? (
         <select id={id} value={value} onChange={(event) => onChange(event.target.value)}>
-          {meta.options.map((option) => <option key={option} value={option}>{option}</option>)}
+          {meta.options.map((option) => <option key={option || '__empty'} value={option}>{option || 'cc-switch/provider 默认'}</option>)}
         </select>
+      ) : meta.type === 'datalist' ? (
+        <>
+          <input
+            id={id}
+            list={`${id}-options`}
+            type="text"
+            value={value}
+            placeholder={meta.placeholder || ''}
+            autoComplete="off"
+            onChange={(event) => onChange(event.target.value)}
+          />
+          <datalist id={`${id}-options`}>
+            {(meta.options || []).map((option) => <option key={option} value={option} />)}
+          </datalist>
+        </>
       ) : (
         <input
           id={id}
